@@ -1,0 +1,541 @@
+/* ExportChat dialogs and the export history. Every rule hangs off our own vc-export- classes. */
+
+/*
+ * Thin scrollbars in Discord's colours on every scroller here. Chromium uses these standard properties
+ * instead of ::-webkit-scrollbar rules, and a thin width without a colour gives white bars.
+ */
+.vc-export-modal-body,
+.vc-export-upload-body,
+.vc-export-history {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thin-thumb, var(--interactive-muted, #4e5058)) transparent;
+}
+
+/* ---- export dialogs ---- */
+
+/* A fixed height, so the dialog never resizes as fields or progress appear; it scrolls inside */
+.vc-export-modal-body {
+    height: 65vh;
+    overflow-y: auto;
+    box-sizing: border-box;
+    padding: 4px 6px 4px 0;
+}
+
+.vc-export-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+
+.vc-export-field > h5 {
+    margin: 0;
+}
+
+.vc-export-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.vc-export-row > .vc-export-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.vc-export-row-sep {
+    flex-shrink: 0;
+}
+
+.vc-export-row-inline {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.vc-export-hint {
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--text-muted, #949ba4);
+}
+
+.vc-export-divider {
+    height: 1px;
+    background: var(--background-modifier-accent, rgb(78 80 88 / 48%));
+    margin: 4px 0 20px;
+}
+
+/* Share, password and admin mode */
+.vc-export-options {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-bottom: 8px;
+}
+
+/* The queue list in the queue dialog */
+.vc-export-queue {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.vc-export-queue-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 4px 4px 10px;
+    border-radius: 8px;
+    background: var(--background-secondary, var(--background-base-lower, #2b2d31));
+}
+
+.vc-export-queue-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 14px;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-export-icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--interactive-normal, var(--text-muted, #b5bac1));
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.vc-export-icon-btn:hover {
+    background: var(--background-modifier-hover, rgb(78 80 88 / 30%));
+    color: var(--interactive-hover, var(--text-default, #dbdee1));
+}
+
+.vc-export-icon-btn:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+}
+
+/* Export progress, shown in the dialog's action bar while exporting */
+.vc-export-footer-progress {
+    flex: 1;
+    min-width: 0;
+}
+
+.vc-export-progress-text {
+    margin-bottom: 4px;
+    overflow: hidden;
+    font-size: 12px;
+    color: var(--text-muted, #949ba4);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-export-progress-bar-outer {
+    width: 100%;
+    height: 6px;
+    overflow: hidden;
+    border-radius: 3px;
+    background: var(--background-tertiary, var(--background-base-lowest, #1e1f22));
+}
+
+.vc-export-progress-bar-inner {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--brand-500, #5865f2);
+    transition: width 0.3s ease;
+}
+
+/* ---- controls (controls.tsx) ---- */
+
+/* Text, number, date and password boxes: plain inputs themed like Discord's */
+.vc-export-input {
+    width: 100%;
+    height: 36px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 10px;
+    border: 1px solid var(--input-border-default, var(--border-subtle, rgb(78 80 88 / 48%)));
+    border-radius: 8px;
+    background: var(--input-background-default, var(--input-background, var(--background-tertiary, #1e1f22)));
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+}
+
+.vc-export-input::placeholder {
+    color: var(--input-placeholder-text-default, var(--text-muted, #949ba4));
+    opacity: 1;
+}
+
+.vc-export-input:focus {
+    border-color: var(--brand-500, var(--brand-experiment, #5865f2));
+    box-shadow: 0 0 0 1px var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+.vc-export-input:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.vc-export-input-number {
+    width: 160px;
+}
+
+/* The date picker's icon follows the theme */
+.vc-export-input-date {
+    color-scheme: dark;
+}
+
+.theme-light .vc-export-input-date {
+    color-scheme: light;
+}
+
+/* Password box, with a Show / Hide button inside on the right */
+.vc-export-pw {
+    position: relative;
+    display: flex;
+    min-width: 0;
+}
+
+.vc-export-pw .vc-export-input {
+    flex: 1;
+    min-width: 0;
+    padding-right: 60px;
+}
+
+.vc-export-pw-toggle {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    transform: translateY(-50%);
+    padding: 2px 8px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--interactive-normal, var(--text-muted, #b5bac1));
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.vc-export-pw-toggle:hover:not(:disabled) {
+    background: var(--background-modifier-hover, rgb(78 80 88 / 30%));
+    color: var(--interactive-hover, var(--text-default, #dbdee1));
+}
+
+.vc-export-pw-toggle:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+}
+
+.vc-export-pw-toggle:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* Label and hint on the left, Discord's switch on the right; the whole row toggles */
+.vc-export-switch-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    cursor: pointer;
+}
+
+.vc-export-switch-row-disabled {
+    cursor: not-allowed;
+}
+
+.vc-export-switch-row-disabled .vc-export-switch-text {
+    opacity: 0.5;
+}
+
+.vc-export-switch-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.vc-export-switch-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+}
+
+/* Checkbox in Discord's colours: a native checkbox drawn by CSS */
+.vc-export-checkbox-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+}
+
+.vc-export-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    cursor: pointer;
+}
+
+.vc-export-check-disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.vc-export-check-input {
+    display: grid;
+    flex-shrink: 0;
+    place-content: center;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    border: 1px solid var(--checkbox-border-default, var(--interactive-muted, #4e5058));
+    border-radius: 6px;
+    background: var(--checkbox-background-default, var(--input-background, var(--background-tertiary, #1e1f22)));
+    cursor: inherit;
+    appearance: none;
+}
+
+.vc-export-check-input:checked {
+    border-color: var(--brand-500, #5865f2);
+    background: var(--brand-500, #5865f2);
+}
+
+.vc-export-check-input:checked::after {
+    content: "";
+    width: 10px;
+    height: 5px;
+    border-bottom: 2px solid #fff;
+    border-left: 2px solid #fff;
+    transform: translateY(-1px) rotate(-45deg);
+}
+
+.vc-export-check-input:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+    outline-offset: 2px;
+}
+
+/* ---- upload dialog (ExportHistory.tsx) ---- */
+
+/* A fixed height for both steps (pick and options, then the result), so it never resizes */
+.vc-export-upload-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    height: min(280px, 60vh);
+    overflow-y: auto;
+    box-sizing: border-box;
+    padding: 4px 2px 4px 0;
+}
+
+.vc-export-upload-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.vc-export-upload-buttons {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.vc-export-upload-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--header-secondary, var(--text-muted, #b5bac1));
+}
+
+.vc-export-upload-name {
+    overflow: hidden;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-export-upload-path {
+    font-size: 12px;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    overflow-wrap: anywhere;
+}
+
+.vc-export-upload-link {
+    font-size: 14px;
+    color: var(--text-link, var(--brand-500, #5865f2));
+    overflow-wrap: anywhere;
+}
+
+/* ---- export history (plugin settings) ---- */
+
+.vc-export-history-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 0;
+}
+
+.vc-export-history {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 500px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.vc-export-history-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+.vc-export-history-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--background-secondary, var(--background-base-lower, #2b2d31));
+}
+
+.vc-export-history-row-selected {
+    background: var(--background-modifier-selected, rgb(78 80 88 / 60%));
+}
+
+.vc-export-history-main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.vc-export-history-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.vc-export-history-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+}
+
+.vc-export-badge {
+    padding: 0 6px;
+    border-radius: 8px;
+    background: var(--background-modifier-accent, rgb(78 80 88 / 48%));
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+}
+
+.vc-export-history-password {
+    font-size: 12px;
+    color: var(--text-warning, #faa61a);
+}
+
+.vc-export-history-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+/* ---- in chat: selected messages and range markers ---- */
+
+/* Selected messages: these override Discord's own backgrounds, hover included */
+.vc-export-sel-highlight {
+    background-color: rgb(250 166 26 / 15%) !important;
+    border-left: 3px solid #faa61a !important;
+}
+
+.vc-export-sel-highlight:hover {
+    background-color: rgb(250 166 26 / 20%) !important;
+    border-left: 3px solid #faa61a !important;
+}
+
+/* Discord's inner wrapper too */
+.vc-export-sel-highlight > *,
+.vc-export-sel-highlight:hover > * {
+    background-color: transparent !important;
+}
+
+.vc-export-sel-hide {
+    background-color: rgb(237 66 69 / 12%) !important;
+    border-left: 3px solid #ed4245 !important;
+    opacity: 0.5 !important;
+}
+
+.vc-export-sel-hide:hover {
+    background-color: rgb(237 66 69 / 18%) !important;
+    border-left: 3px solid #ed4245 !important;
+    opacity: 0.5 !important;
+}
+
+.vc-export-sel-hide > *,
+.vc-export-sel-hide:hover > * {
+    background-color: transparent !important;
+}
+
+/* Range markers: a line above the first message and below the last one */
+.vc-export-range-start {
+    position: relative !important;
+}
+
+.vc-export-range-start::before {
+    content: "Export range starts here ▼";
+    display: block;
+    width: 100%;
+    margin-bottom: 4px;
+    padding: 4px 0;
+    border-bottom: 2px dashed var(--brand-500, #5865f2);
+    color: var(--brand-500, #5865f2);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-align: center;
+    pointer-events: none;
+}
+
+.vc-export-range-end {
+    position: relative !important;
+}
+
+.vc-export-range-end::after {
+    content: "▲ Export range ends here";
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    padding: 4px 0;
+    border-top: 2px dashed var(--brand-500, #5865f2);
+    color: var(--brand-500, #5865f2);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-align: center;
+    pointer-events: none;
+}

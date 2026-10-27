@@ -1,0 +1,1194 @@
+/*
+ * o2i popout, expanded modal and settings page. Global and always loaded: plain vc-o2i- classes only (no :has(), no [class*=…]).
+ * Spacing scale: 4 / 8 / 12 / 16 px. Theme variables with fallbacks; fixed colours only for the
+ * status / warning accents and white-on-accent text.
+ */
+
+.vc-o2i-popout {
+    width: 360px;
+
+    /* Fixed height: switching tabs never resizes (and so never moves) the popout. */
+    height: min(580px, calc(100vh - 120px));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle, var(--background-modifier-accent));
+    background: var(--background-floating, var(--background-base-lower, #111214));
+    box-shadow: var(--shadow-high, var(--elevation-high, 0 8px 16px rgb(0 0 0 / 24%)));
+    color: var(--text-default, var(--text-normal));
+}
+
+.vc-o2i-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+/* ---- status line ---- */
+
+.vc-o2i-header {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 24px;
+    padding: 12px 12px 8px;
+    font-size: 13px;
+    line-height: 16px;
+}
+
+.vc-o2i-title {
+    flex: none;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 20px;
+    color: var(--header-primary, var(--text-strong, var(--text-default)));
+}
+
+/* Shrinks (with an ellipsis) only when the header is out of room, so the buttons never overflow. */
+.vc-o2i-status-text {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+}
+
+.vc-o2i-status-detail {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted, #949ba4);
+}
+
+/* Open settings (when unset) and expand / shrink, pinned to the right. */
+.vc-o2i-header-end {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+}
+
+.vc-o2i-icon-btn {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--interactive-normal, #b5bac1);
+    cursor: pointer;
+}
+
+.vc-o2i-icon-btn:hover {
+    background: var(--background-modifier-hover, rgb(78 80 88 / 30%));
+    color: var(--interactive-hover, var(--text-default, #dbdee1));
+}
+
+/* Export logs while the zip is being made. */
+.vc-o2i-icon-btn-busy,
+.vc-o2i-icon-btn-busy:hover {
+    background: transparent;
+    color: var(--interactive-muted, #4e5058);
+    cursor: progress;
+}
+
+.vc-o2i-icon-btn:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+    outline-offset: 1px;
+}
+
+/* The power button while o2i is on (off: the plain icon colour). */
+.vc-o2i-icon-btn-power-on,
+.vc-o2i-icon-btn-power-on:hover {
+    color: var(--status-positive, #23a55a);
+}
+
+/* The mute button while o2i's mic is muted. */
+.vc-o2i-icon-btn-muted,
+.vc-o2i-icon-btn-muted:hover {
+    color: var(--status-danger, #da373c);
+}
+
+/* ---- "o2i is off" (power button): replaces the tabs ---- */
+
+.vc-o2i-off {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-height: 100%;
+    padding: 24px 16px;
+    text-align: center;
+}
+
+.vc-o2i-off-icon {
+    display: flex;
+    color: var(--interactive-muted, #4e5058);
+}
+
+.vc-o2i-off-title {
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 20px;
+    color: var(--header-primary, var(--text-strong, var(--text-default)));
+}
+
+.vc-o2i-off-text {
+    max-width: 300px;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--text-muted, #949ba4);
+}
+
+.vc-o2i-off-btn {
+    min-width: 160px;
+}
+
+/* ---- plugin settings page ---- */
+
+/* One gap between the blocks (power, engine path, devices, folders, re-import, logs). */
+.vc-o2i-setup {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.vc-o2i-setup-devices {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* Under a text box. */
+.vc-o2i-setup-hint {
+    margin-top: 8px;
+}
+
+/* Above a button. */
+.vc-o2i-setup-text {
+    margin-bottom: 8px;
+}
+
+/* The power state in one line, button on the right. */
+.vc-o2i-power-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.vc-o2i-power-row > :last-child {
+    flex: none;
+}
+
+/* Fix call-to-action / warnings: one compact row, text left, button right. */
+.vc-o2i-banner {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 12px 8px;
+    padding: 8px;
+    border-radius: 6px;
+    border-left: 3px solid var(--status-warning, #f0b232);
+    background: var(--background-modifier-hover, rgb(78 80 88 / 16%));
+}
+
+.vc-o2i-banner-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.vc-o2i-banner-title {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 16px;
+}
+
+.vc-o2i-banner-detail {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--text-muted, #949ba4);
+}
+
+/* ---- tabs & scroll area ---- */
+
+.vc-o2i-tabbar {
+    flex: none;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border-subtle, var(--background-modifier-accent));
+}
+
+.vc-o2i-tabbar-item {
+    margin-right: 16px;
+    padding: 4px 0 8px;
+    margin-bottom: -2px;
+}
+
+.vc-o2i-content {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+
+    /* the width doesn't jump when a tab starts or stops scrolling */
+    scrollbar-gutter: stable;
+    padding: 0 12px 4px;
+}
+
+/*
+ * Thin scrollbars in Discord's theme colours on every o2i scroller. Chromium uses these standard
+ * properties instead of ::-webkit-scrollbar rules once either is set, so both are set here: a thin
+ * width without a colour is what gave the white default bars before.
+ */
+.vc-o2i-content,
+.vc-o2i-picker-list,
+.vc-o2i-clip-grid {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thin-thumb, var(--interactive-muted, #4e5058)) transparent;
+}
+
+.vc-o2i-tab {
+    display: flex;
+    flex-direction: column;
+}
+
+/* ---- sections, rows, fields ---- */
+
+.vc-o2i-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px 0;
+}
+
+.vc-o2i-section + .vc-o2i-section {
+    border-top: 1px solid var(--border-subtle, var(--background-modifier-accent));
+}
+
+.vc-o2i-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 20px;
+    margin-bottom: -4px;
+}
+
+.vc-o2i-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--header-secondary, var(--text-muted, #949ba4));
+}
+
+/* A switch and the controls it enables. */
+.vc-o2i-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vc-o2i-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 28px;
+    cursor: pointer;
+}
+
+.vc-o2i-row-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.vc-o2i-row-label {
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 18px;
+}
+
+.vc-o2i-row-hint {
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--text-muted, #949ba4);
+}
+
+.vc-o2i-row-disabled {
+    cursor: not-allowed;
+}
+
+.vc-o2i-row-disabled .vc-o2i-row-text,
+.vc-o2i-field-disabled .vc-o2i-label,
+.vc-o2i-field-disabled .vc-o2i-value {
+    opacity: 0.5;
+}
+
+.vc-o2i-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.vc-o2i-field-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.vc-o2i-label {
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 16px;
+}
+
+.vc-o2i-value {
+    flex: none;
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--text-muted, #949ba4);
+    font-variant-numeric: tabular-nums;
+}
+
+.vc-o2i-note {
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--text-muted, #949ba4);
+}
+
+.vc-o2i-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vc-o2i-empty-text {
+    padding: 8px 0;
+    text-align: center;
+    font-size: 13px;
+    line-height: 16px;
+    color: var(--text-muted, #949ba4);
+}
+
+/* ---- small buttons ---- */
+
+.vc-o2i-mini-btn {
+    flex: none;
+    padding: 2px 8px;
+    border: none;
+    border-radius: 4px;
+    background: var(--background-modifier-accent, rgb(78 80 88 / 48%));
+    color: var(--interactive-normal, #b5bac1);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 16px;
+    cursor: pointer;
+}
+
+.vc-o2i-mini-btn:hover {
+    background: var(--background-modifier-selected, rgb(78 80 88 / 60%));
+    color: var(--interactive-hover, var(--text-default, #dbdee1));
+}
+
+.vc-o2i-mini-btn:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+    outline-offset: 1px;
+}
+
+.vc-o2i-mini-btn-on,
+.vc-o2i-mini-btn-on:hover {
+    background: var(--status-danger, #da373c);
+    color: var(--white-500, #fff);
+}
+
+.vc-o2i-mini-btn-brand,
+.vc-o2i-mini-btn-brand:hover {
+    background: var(--brand-500, var(--brand-experiment, #5865f2));
+    color: var(--white-500, #fff);
+}
+
+/* ---- text boxes (Discord look: theme input colours, rounded, brand focus ring) ---- */
+
+.vc-o2i-input-wrap {
+    position: relative;
+    display: flex;
+    min-width: 0;
+}
+
+.vc-o2i-input {
+    flex: 1;
+    min-width: 0;
+    height: 32px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 10px;
+    border: 1px solid var(--input-border-default, var(--border-subtle, rgb(78 80 88 / 48%)));
+    border-radius: 8px;
+    background: var(--input-background-default, var(--input-background, var(--background-tertiary, #1e1f22)));
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 18px;
+    outline: none;
+    transition: border-color 0.1s ease, box-shadow 0.1s ease;
+}
+
+.vc-o2i-input::placeholder {
+    color: var(--input-placeholder-text-default, var(--text-muted, #949ba4));
+    opacity: 1;
+}
+
+.vc-o2i-input:focus {
+    border-color: var(--brand-500, var(--brand-experiment, #5865f2));
+    box-shadow: 0 0 0 1px var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+.vc-o2i-input-clearable {
+    padding-right: 28px;
+}
+
+.vc-o2i-input-clear {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--interactive-normal, #b5bac1);
+    font-size: 10px;
+    line-height: 1;
+    transform: translateY(-50%);
+    cursor: pointer;
+}
+
+.vc-o2i-input-clear:hover {
+    background: var(--background-modifier-selected, rgb(78 80 88 / 60%));
+    color: var(--interactive-hover, var(--text-default, #dbdee1));
+}
+
+.vc-o2i-input-clear:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+}
+
+/* ---- voice preset (segmented buttons) ---- */
+
+.vc-o2i-seg {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 6px;
+    background: var(--background-modifier-accent, rgb(78 80 88 / 48%));
+}
+
+.vc-o2i-seg-btn {
+    flex: 1;
+    padding: 4px 8px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--interactive-normal, var(--text-muted, #b5bac1));
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 20px;
+    cursor: pointer;
+}
+
+.vc-o2i-seg-btn:hover {
+    background: var(--background-modifier-hover, rgb(78 80 88 / 30%));
+    color: var(--interactive-hover, var(--text-default, #dbdee1));
+}
+
+.vc-o2i-seg-btn:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+    outline-offset: 1px;
+}
+
+.vc-o2i-seg-btn-selected,
+.vc-o2i-seg-btn-selected:hover {
+    background: var(--brand-500, var(--brand-experiment, #5865f2));
+    color: var(--white-500, #fff);
+    cursor: default;
+}
+
+/* ---- level meter + draggable gate threshold ---- */
+
+.vc-o2i-meter {
+    position: relative;
+    height: 20px;
+    user-select: none;
+}
+
+.vc-o2i-meter-gated {
+    cursor: ew-resize;
+
+    /* pointer drags move the threshold instead of scrolling (touch / pen) */
+    touch-action: none;
+}
+
+.vc-o2i-meter-bar {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    border-radius: 4px;
+    background: var(--background-modifier-accent, rgb(78 80 88 / 48%));
+}
+
+.vc-o2i-meter-fill {
+    position: absolute;
+    inset: 0;
+    transform-origin: left center;
+
+    /* transform only: a moving meter never triggers layout */
+    will-change: transform;
+}
+
+.vc-o2i-meter-open {
+    background: var(--status-positive, #23a55a);
+}
+
+.vc-o2i-meter-closed {
+    background: var(--interactive-muted, #4e5058);
+}
+
+.vc-o2i-meter-ungated {
+    background: var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+.vc-o2i-meter-label {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--white-500, #fff);
+    text-shadow: 0 0 2px rgb(0 0 0 / 80%);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+}
+
+/* 12 px wide hit / focus target; the visible 2 px white line is its ::before. Not clipped by the bar. */
+.vc-o2i-meter-threshold {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 12px;
+    margin-left: -6px;
+    border-radius: 3px;
+    outline: none;
+    cursor: ew-resize;
+}
+
+.vc-o2i-meter-threshold::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 5px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--white-500, #fff);
+    box-shadow: 0 0 2px rgb(0 0 0 / 60%);
+}
+
+.vc-o2i-meter-threshold:focus-visible {
+    box-shadow: 0 0 0 2px var(--focus-primary, var(--brand-500, #5865f2));
+}
+
+/* Live value while dragging, above the line (over the label row). */
+.vc-o2i-meter-bubble {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 6px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--brand-500, var(--brand-experiment, #5865f2));
+    color: var(--white-500, #fff);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    box-shadow: var(--shadow-low, 0 1px 4px rgb(0 0 0 / 30%));
+    pointer-events: none;
+}
+
+/* ---- apps ---- */
+
+.vc-o2i-app-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+    border-radius: 6px;
+    background: var(--background-modifier-hover, rgb(78 80 88 / 16%));
+}
+
+.vc-o2i-app-row-muted .vc-o2i-app-name {
+    opacity: 0.5;
+}
+
+.vc-o2i-app-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.vc-o2i-app-icon {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    object-fit: contain;
+}
+
+.vc-o2i-app-icon-generic {
+    background: var(--background-modifier-accent, rgb(78 80 88 / 48%));
+}
+
+.vc-o2i-app-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 18px;
+}
+
+/* status dot: engine status in the header, attached / playing in the apps list */
+.vc-o2i-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--interactive-muted, #4e5058);
+}
+
+.vc-o2i-dot-on {
+    background: var(--status-positive, #23a55a);
+}
+
+.vc-o2i-dot-danger {
+    background: var(--status-danger, #da373c);
+}
+
+.vc-o2i-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vc-o2i-picker-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.vc-o2i-picker-search {
+    flex: 1;
+    min-width: 0;
+}
+
+.vc-o2i-picker-list {
+    display: flex;
+    flex-direction: column;
+    max-height: 180px;
+    overflow-y: auto;
+    border-radius: 6px;
+    background: var(--background-modifier-hover, rgb(78 80 88 / 16%));
+}
+
+.vc-o2i-picker-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.vc-o2i-picker-item:hover {
+    background: var(--background-modifier-selected, rgb(78 80 88 / 60%));
+}
+
+.vc-o2i-picker-item:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+    outline-offset: -2px;
+}
+
+.vc-o2i-picker-empty {
+    padding: 12px 0;
+    text-align: center;
+    font-size: 13px;
+    line-height: 16px;
+    color: var(--text-muted, #949ba4);
+}
+
+/* ---- clips ---- */
+
+.vc-o2i-clip-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.vc-o2i-clip-span {
+    grid-column: 1 / -1;
+}
+
+.vc-o2i-clip-tile {
+    display: flex;
+    align-items: stretch;
+    min-width: 0;
+    border-radius: 6px;
+    background: var(--background-modifier-hover, rgb(78 80 88 / 16%));
+}
+
+.vc-o2i-clip-tile-selected {
+    background: var(--background-modifier-selected, rgb(78 80 88 / 60%));
+    box-shadow: inset 0 0 0 1px var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+.vc-o2i-clip-play {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    padding: 8px;
+    border: none;
+    border-radius: 6px 0 0 6px;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.vc-o2i-clip-gear {
+    flex: none;
+    padding: 0 8px;
+    border: none;
+    border-radius: 0 6px 6px 0;
+    background: transparent;
+    color: var(--interactive-normal, #b5bac1);
+    cursor: pointer;
+}
+
+.vc-o2i-clip-play:hover,
+.vc-o2i-clip-gear:hover {
+    background: var(--background-modifier-selected, rgb(78 80 88 / 60%));
+}
+
+.vc-o2i-clip-play:focus-visible,
+.vc-o2i-clip-gear:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+    outline-offset: -2px;
+}
+
+.vc-o2i-clip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 16px;
+}
+
+.vc-o2i-clip-emoji {
+    margin-right: 4px;
+}
+
+.vc-o2i-clip-meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    line-height: 14px;
+    color: var(--text-muted, #949ba4);
+}
+
+/* Source filter (more than one soundboard folder): "All" + one pill per folder, wrapping. */
+.vc-o2i-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.vc-o2i-chip {
+    flex: none;
+    max-width: 100%;
+    overflow: hidden;
+    padding: 2px 10px;
+    border: none;
+    border-radius: 12px;
+    background: var(--background-modifier-accent, rgb(78 80 88 / 48%));
+    color: var(--interactive-normal, #b5bac1);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 18px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.vc-o2i-chip:hover {
+    background: var(--background-modifier-selected, rgb(78 80 88 / 60%));
+    color: var(--interactive-hover, var(--text-default, #dbdee1));
+}
+
+.vc-o2i-chip:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+    outline-offset: 1px;
+}
+
+.vc-o2i-chip-selected,
+.vc-o2i-chip-selected:hover {
+    background: var(--brand-500, var(--brand-experiment, #5865f2));
+    color: var(--white-500, #fff);
+}
+
+/* One clip's settings, full width under the grid. */
+.vc-o2i-clip-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 8px 12px 12px;
+    border-radius: 6px;
+    background: var(--background-modifier-hover, rgb(78 80 88 / 16%));
+}
+
+.vc-o2i-clip-editor-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 20px;
+    margin-bottom: -4px;
+}
+
+.vc-o2i-clip-editor-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 16px;
+}
+
+.vc-o2i-clip-editor-cols,
+.vc-o2i-clip-editor-col {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+}
+
+/* Emoji (narrow) and Name side by side. */
+.vc-o2i-sound-id {
+    display: flex;
+    gap: 8px;
+}
+
+.vc-o2i-sound-id > .vc-o2i-field:last-child {
+    flex: 1;
+    min-width: 0;
+}
+
+.vc-o2i-emoji-field {
+    width: 96px;
+}
+
+.vc-o2i-emoji-field .vc-o2i-input {
+    text-align: center;
+    font-size: 18px;
+}
+
+.vc-o2i-emoji-field .vc-o2i-input::placeholder {
+    font-size: 13px;
+}
+
+.vc-o2i-np-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.vc-o2i-np-bar {
+    height: 4px;
+    overflow: hidden;
+    border-radius: 2px;
+    background: var(--background-modifier-accent, rgb(78 80 88 / 48%));
+}
+
+/* Seekable bar: a taller hit area around the 4 px track; drags don't scroll (touch / pen). */
+.vc-o2i-np-seek {
+    padding: 5px 0;
+    cursor: pointer;
+    touch-action: none;
+    user-select: none;
+    border-radius: 4px;
+    outline: none;
+}
+
+.vc-o2i-np-seek:focus-visible {
+    box-shadow: 0 0 0 2px var(--focus-primary, var(--brand-500, #5865f2));
+}
+
+.vc-o2i-np-fill {
+    height: 100%;
+    background: var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+.vc-o2i-np-fill-indeterminate {
+    width: 100%;
+    opacity: 0.4;
+}
+
+/* ---- hotkey recorder ---- */
+
+.vc-o2i-hotkey {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.vc-o2i-hotkey-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.vc-o2i-hotkey-btn {
+    flex: 1;
+    min-width: 0;
+    min-height: 32px;
+    box-sizing: border-box;
+    padding: 6px 10px;
+    border: 1px solid var(--input-border-default, var(--border-subtle, rgb(78 80 88 / 48%)));
+    border-radius: 8px;
+    background: var(--input-background-default, var(--input-background, var(--background-tertiary, #1e1f22)));
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 18px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.vc-o2i-hotkey-btn:focus-visible,
+.vc-o2i-hotkey-btn-recording {
+    outline: none;
+    border-color: var(--brand-500, var(--brand-experiment, #5865f2));
+    box-shadow: 0 0 0 1px var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+.vc-o2i-hotkey-msg {
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--status-danger, #da373c);
+}
+
+/* ---- soundboard folders (plugin settings page, and the Soundboard tab's Folders section) ---- */
+
+.vc-o2i-folders {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+/* In the panel the section's own gap spaces it. */
+.vc-o2i-folders-compact {
+    margin: 0;
+}
+
+.vc-o2i-folder-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: var(--background-modifier-hover, rgb(78 80 88 / 16%));
+    color: var(--text-default, var(--text-normal, #dbdee1));
+}
+
+/* Parent shrinks (ellipsis) before the folder's own name; the full path is the row's tooltip. */
+.vc-o2i-folder-path {
+    flex: 1;
+    display: flex;
+    min-width: 0;
+    font-size: 14px;
+    line-height: 18px;
+    white-space: nowrap;
+}
+
+.vc-o2i-folder-parent {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-muted, #949ba4);
+}
+
+.vc-o2i-folder-name {
+    flex: none;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 500;
+}
+
+/* ---- expanded panel (modal) ---- */
+
+/* Fixed height (never resizes with the tab); Discord's modal title row sits above it. */
+.vc-o2i-modal-body {
+    display: flex;
+    flex-direction: column;
+    height: calc(85vh - 80px);
+    min-height: 320px;
+    color: var(--text-default, var(--text-normal));
+}
+
+/*
+ * The whole panel (header, banner, tab bar and content) is capped and centred as one column, so they
+ * stay aligned on wide screens; the tabs use its full width.
+ */
+.vc-o2i-panel-expanded {
+    width: 100%;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+/* Mic: Voice over Levels on the left, Cleanup (with the meter) on the right. */
+.vc-o2i-panel-expanded .vc-o2i-tab-mic {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 32px;
+    align-items: start;
+}
+
+/* Cleanup on the right, next to Mute, Voice and Levels. */
+.vc-o2i-panel-expanded .vc-o2i-tab-mic > .vc-o2i-section-tall {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    border-top: none;
+}
+
+/* Apps: routed apps as a grid of cards; a taller picker. */
+.vc-o2i-panel-expanded .vc-o2i-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.vc-o2i-panel-expanded .vc-o2i-picker-list {
+    max-height: 320px;
+}
+
+/* Soundboard: as many tile columns as fit, a taller grid, the editor in two columns. */
+.vc-o2i-panel-expanded .vc-o2i-clip-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 6px;
+    max-height: min(46vh, 480px);
+}
+
+.vc-o2i-panel-expanded .vc-o2i-clip-editor-cols {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 24px;
+    align-items: start;
+}
+
+/* A narrow window: back to one column. */
+@media (width <= 760px) {
+    .vc-o2i-panel-expanded .vc-o2i-tab-mic,
+    .vc-o2i-panel-expanded .vc-o2i-clip-editor-cols {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .vc-o2i-panel-expanded .vc-o2i-tab-mic > .vc-o2i-section-tall {
+        grid-column: auto;
+        grid-row: auto;
+        border-top: 1px solid var(--border-subtle, var(--background-modifier-accent));
+    }
+}
+
+/* ---- auto gate toggle ---- */
+
+.vc-o2i-gate-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.vc-o2i-gate-head > .vc-o2i-row {
+    flex: 1;
+    min-width: 0;
+}
+
+.vc-o2i-pill {
+    flex: none;
+    padding: 2px 10px;
+    border: 1px solid var(--background-modifier-accent, rgb(78 80 88 / 48%));
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-muted, #949ba4);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+    cursor: pointer;
+}
+
+.vc-o2i-pill-on {
+    border-color: transparent;
+    background: var(--brand-500, var(--brand-experiment, #5865f2));
+    color: var(--white-500, #fff);
+}
+
+.vc-o2i-pill:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.vc-o2i-meter-threshold-dim {
+    opacity: 0.5;
+}

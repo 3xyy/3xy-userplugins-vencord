@@ -1,0 +1,447 @@
+/* Layout B: ImageTools editor chrome */
+
+/* Root: flex column at fixed height so the canvas fills the gap */
+.vc-it-root {
+    display: flex;
+    flex-direction: column;
+    height: 85vh;
+    width: 100%;
+    background: var(--background-primary, #313338);
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    overflow: hidden;
+}
+
+/*
+ * Thin scrollbars in Discord's colours. scrollbar-color is inherited, so anything that scrolls inside
+ * these gets themed bars instead of the browser's white ones; scrollers also set scrollbar-width.
+ */
+.vc-it-root,
+.vc-it-picker,
+.vc-it-prompt {
+    scrollbar-color: var(--scrollbar-thin-thumb, var(--interactive-muted, #4e5058)) transparent;
+}
+
+/* focusable (tabIndex -1) only so shortcuts follow a canvas click; no focus ring for that */
+.vc-it-root:focus {
+    outline: none;
+}
+
+/* ── Toolbar ── */
+.vc-it-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px;
+    flex: 0 0 auto;
+    border-bottom: 1px solid var(--background-modifier-accent, #ffffff14);
+}
+
+/* thin line between groups of toolbar buttons */
+.vc-it-divider {
+    flex: 0 0 auto;
+    width: 1px;
+    height: 20px;
+    margin: 0 4px;
+    background: var(--background-modifier-accent, #ffffff14);
+}
+
+/* ── Options strip ── */
+.vc-it-options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    min-height: 40px;
+    padding: 4px 8px;
+    flex: 0 0 auto;
+    border-bottom: 1px solid var(--background-modifier-accent, #ffffff14);
+}
+
+/* compact numeric input beside a slider (a native <input>, themed to look like Discord's) */
+.vc-it-num {
+    width: 56px;
+    height: 28px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 6px;
+    border: 1px solid var(--input-border-default, var(--border-subtle, rgb(78 80 88 / 48%)));
+    border-radius: 8px;
+    background: var(--input-background-default, var(--input-background, var(--background-tertiary, #1e1f22)));
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+    appearance: textfield;
+}
+
+/* the browser's spin arrows don't follow the theme; typing and the arrow keys still work */
+.vc-it-num::-webkit-inner-spin-button,
+.vc-it-num::-webkit-outer-spin-button {
+    margin: 0;
+    appearance: none;
+}
+
+.vc-it-num:focus {
+    border-color: var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+/* short muted help text in the options strip */
+.vc-it-hint {
+    color: var(--text-muted, #949ba4);
+    font-size: 13px;
+}
+
+/* in-app prompt modal body */
+.vc-it-prompt {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px;
+}
+
+.vc-it-prompt-label {
+    color: var(--header-secondary, var(--text-muted, #b5bac1));
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.vc-it-prompt-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+/* labeled control pair (label + slider/input) */
+.vc-it-labeled {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 200px;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    font-size: 13px;
+}
+
+/* let the slider take the available space, number box stays fixed */
+.vc-it-labeled > :not(span):not(.vc-it-num) {
+    flex: 1 1 auto;
+    min-width: 80px;
+}
+
+/* Fill checkbox label */
+.vc-it-fill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    font-size: 13px;
+    cursor: pointer;
+    user-select: none;
+}
+
+/* a checkbox drawn like Discord's (still a native input, so the keyboard and screen readers work) */
+.vc-it-check {
+    display: grid;
+    place-content: center;
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    border: 1px solid var(--checkbox-border-default, var(--interactive-muted, #4e5058));
+    border-radius: 4px;
+    background: var(--checkbox-background-default, var(--input-background-default, var(--background-tertiary, #1e1f22)));
+    cursor: pointer;
+    appearance: none;
+}
+
+.vc-it-check::before {
+    width: 10px;
+    height: 10px;
+    background: #fff;
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+    content: "";
+    transform: scale(0);
+    transition: transform 0.1s ease;
+}
+
+.vc-it-check:checked {
+    border-color: var(--brand-500, var(--brand-experiment, #5865f2));
+    background: var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+.vc-it-check:checked::before {
+    transform: scale(1);
+}
+
+.vc-it-check:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+    outline-offset: 2px;
+}
+
+/* ── Canvas stage ── */
+.vc-it-stage {
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    /* checkerboard pattern behind transparent images */
+    background: repeating-conic-gradient(
+        var(--background-secondary, #2b2d31) 0% 25%,
+        var(--background-primary, #313338) 0% 50%
+    ) 50% / 24px 24px;
+}
+
+.vc-it-stage canvas {
+    display: block;
+    position: absolute;
+    inset: 0;
+}
+
+/* ── Size bar (footer) ── */
+.vc-it-sizebar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    padding: 6px 8px;
+    flex: 0 0 auto;
+    border-top: 1px solid var(--background-modifier-accent, #ffffff14);
+}
+
+/* file name: a themed text box with the extension (set by the save format) shown after it */
+.vc-it-name {
+    display: flex;
+    align-items: center;
+    flex: 0 1 240px;
+    min-width: 120px;
+    height: 30px;
+    box-sizing: border-box;
+    padding: 0 8px;
+    border: 1px solid var(--input-border-default, var(--border-subtle, rgb(78 80 88 / 48%)));
+    border-radius: 8px;
+    background: var(--input-background-default, var(--input-background, var(--background-tertiary, #1e1f22)));
+    cursor: text;
+}
+
+.vc-it-name:focus-within {
+    border-color: var(--brand-500, var(--brand-experiment, #5865f2));
+    box-shadow: 0 0 0 1px var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+.vc-it-name-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+}
+
+.vc-it-name-input::placeholder {
+    color: var(--input-placeholder-text-default, var(--text-muted, #949ba4));
+    opacity: 1;
+}
+
+.vc-it-name-input:disabled {
+    opacity: 0.6;
+}
+
+.vc-it-name-ext {
+    flex: 0 0 auto;
+    color: var(--text-muted, #949ba4);
+    font-size: 14px;
+    user-select: none;
+}
+
+/* size readout */
+.vc-it-size {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted, #949ba4);
+    font-size: 13px;
+}
+
+/* over-limit: turn red + bold */
+.vc-it-size.over {
+    color: var(--status-danger, var(--red-430, #f23f43));
+    font-weight: 600;
+}
+
+/* zoom readout (click to fit) */
+.vc-it-zoom {
+    min-width: 56px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted, #949ba4);
+}
+
+/* size-limit <select>, with its own chevron (drawn in the text colour) instead of the browser's arrow */
+.vc-it-limit {
+    height: 30px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 26px 0 10px;
+    border: 1px solid var(--input-border-default, var(--border-subtle, rgb(78 80 88 / 48%)));
+    border-radius: 8px;
+    background-color: var(--input-background-default, var(--input-background, var(--background-tertiary, #1e1f22)));
+    background-image:
+        linear-gradient(45deg, transparent 50%, currentcolor 50%),
+        linear-gradient(135deg, currentcolor 50%, transparent 50%);
+    background-position:
+        calc(100% - 15px) 50%,
+        calc(100% - 10px) 50%;
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    appearance: none;
+}
+
+.vc-it-limit:focus {
+    outline: none;
+    border-color: var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+/* the open list follows the theme too */
+.vc-it-limit option {
+    background: var(--background-floating, var(--background-surface-highest, #111214));
+    color: var(--text-default, var(--text-normal, #dbdee1));
+}
+
+/* ── Tool button (toolbar + options strip) ── */
+.vc-it-tool {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5px 7px;
+    min-width: 30px;
+    min-height: 30px;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--interactive-normal, var(--text-default, #dbdee1));
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    transition: background 0.1s ease, color 0.1s ease;
+}
+
+.vc-it-tool:hover:not(:disabled) {
+    background: var(--background-modifier-hover, #ffffff0a);
+    color: var(--interactive-hover, var(--text-default, #dbdee1));
+}
+
+.vc-it-tool.selected {
+    background: var(--brand-500, var(--brand-experiment, #5865f2));
+    color: #fff;
+}
+
+.vc-it-tool.selected:hover {
+    background: var(--brand-560, var(--brand-experiment-560, #4752c4));
+    color: #fff;
+}
+
+.vc-it-tool:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+    outline-offset: -2px;
+}
+
+.vc-it-tool:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.vc-it-tool svg {
+    pointer-events: none;
+}
+
+/* ── Spacer (pushes subsequent items to the right) ── */
+.vc-it-spacer {
+    flex: 1 1 auto;
+}
+
+/* ── Brush button injected into Discord's pending-upload action bar ── */
+.vc-it-upload-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--interactive-normal, #b5bac1);
+    cursor: pointer;
+}
+
+.vc-it-upload-btn:hover {
+    color: var(--interactive-hover, #fff);
+    background: var(--background-modifier-hover, #ffffff0f);
+}
+
+.vc-it-upload-btn svg {
+    display: block;
+    pointer-events: none;
+}
+
+/* ── Image picker (shown when several images are staged) ── */
+.vc-it-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+}
+
+.vc-it-picker-title {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.vc-it-picker-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px;
+    max-height: 60vh;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.vc-it-picker-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 6px;
+    border: 1px solid var(--background-modifier-accent, #ffffff14);
+    border-radius: 8px;
+    background: var(--background-secondary, #2b2d31);
+    color: var(--text-muted, #949ba4);
+    cursor: pointer;
+}
+
+.vc-it-picker-item:hover {
+    border-color: var(--brand-500, var(--brand-experiment, #5865f2));
+    background: var(--background-modifier-hover, #ffffff0a);
+}
+
+.vc-it-picker-item img {
+    width: 100%;
+    height: 90px;
+    object-fit: contain;
+    border-radius: 4px;
+}
+
+.vc-it-picker-name {
+    font-size: 11px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

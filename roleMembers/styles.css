@@ -1,0 +1,312 @@
+/* RoleMembers: big resizable modal and 3-column layout */
+
+/* The modal is widened with inline styles from modal.tsx (widenModal): the current Modal drops
+   className. Don't add a `[class*=...]:has(...)` rule here instead: a broad :has() subject forces
+   style recalcs across the whole app and lags Discord (same class of rule Vencord's FixDiscordCss strips). */
+
+/* Fixed viewport height so the modal never resizes as search results change. */
+.vc-rolemembers-root {
+    display: flex;
+    flex-direction: column;
+    height: 80vh;
+    min-height: 0;
+    gap: 8px;
+}
+
+.vc-rolemembers-container {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    gap: 4px;
+    width: 100%;
+}
+
+/* Columns: a fixed header (+ optional search) above a scrollable list */
+.vc-rolemembers-col {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    gap: 6px;
+}
+
+.vc-rolemembers-col-roles {
+    width: var(--vc-rm-roles-w, 240px);
+    flex-shrink: 0;
+}
+
+.vc-rolemembers-col-perms {
+    flex: 1;
+    min-width: 0;
+}
+
+.vc-rolemembers-col-members {
+    width: var(--vc-rm-members-w, 280px);
+    flex-shrink: 0;
+}
+
+.vc-rolemembers-col-scroller {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-right: 4px;
+}
+
+.vc-rolemembers-col-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px 0;
+    color: var(--header-secondary);
+    text-transform: uppercase;
+    font-size: 12px;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+
+.vc-rolemembers-col-header-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Resizable dividers (drag to resize the adjacent side column) */
+.vc-rolemembers-divider {
+    width: 4px;
+    flex-shrink: 0;
+    align-self: stretch;
+    border-radius: 2px;
+    cursor: col-resize;
+    background-color: var(--background-modifier-accent, var(--background-mod-normal));
+    transition: background-color 0.12s ease;
+}
+
+.vc-rolemembers-divider:hover,
+.vc-rolemembers-divider:active {
+    background-color: var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+/* Search bar (one per column) */
+.vc-rolemembers-search {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 34px;
+    margin: 0 4px;
+    padding: 0 10px;
+    border-radius: 8px;
+    background-color: var(--input-background, var(--background-secondary));
+    border: 1px solid var(--border-subtle, transparent);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.vc-rolemembers-search:focus-within {
+    border-color: var(--brand-500, var(--brand-experiment, #5865f2));
+    box-shadow: 0 0 0 1px var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+.vc-rolemembers-search-icon {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.vc-rolemembers-search-input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-normal, var(--text-default));
+    font-size: 14px;
+    font-family: inherit;
+}
+
+.vc-rolemembers-search-input::placeholder {
+    color: var(--text-muted);
+}
+
+.vc-rolemembers-search-clear {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    padding: 2px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: color 0.12s ease, background-color 0.12s ease;
+}
+
+.vc-rolemembers-search-clear:hover {
+    color: var(--text-normal, var(--text-default));
+    background-color: var(--background-modifier-hover, var(--background-mod-subtle));
+}
+
+/* Generic clickable row (roles + members) */
+.vc-rolemembers-list-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.vc-rolemembers-list-item:hover {
+    background-color: var(--background-modifier-hover, var(--background-mod-subtle));
+}
+
+.vc-rolemembers-list-item-active {
+    background-color: var(--background-modifier-selected, var(--background-mod-strong));
+}
+
+.vc-rolemembers-list-item-text {
+    flex: 1;
+    min-width: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.vc-rolemembers-row-action {
+    margin-left: auto;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--interactive-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.1s ease, color 0.1s ease, background-color 0.1s ease;
+}
+
+.vc-rolemembers-list-item:hover .vc-rolemembers-row-action {
+    opacity: 1;
+}
+
+.vc-rolemembers-row-action:hover {
+    color: var(--interactive-active);
+    background-color: var(--background-modifier-hover, var(--background-mod-subtle));
+}
+
+.vc-rolemembers-role-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.vc-rolemembers-role-img {
+    width: 20px;
+    height: 20px;
+    object-fit: contain;
+    flex-shrink: 0;
+}
+
+.vc-rolemembers-member-avatar {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.vc-rolemembers-count-badge {
+    margin-left: auto;
+    flex-shrink: 0;
+    padding: 0 6px;
+    min-width: 20px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9px;
+    background-color: var(--background-modifier-accent, var(--background-mod-normal));
+    color: var(--header-secondary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.vc-rolemembers-owner-crown {
+    color: var(--text-warning, #f0b232);
+    flex-shrink: 0;
+}
+
+/* Permissions list */
+.vc-rolemembers-perms-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 2px 10px 6px;
+    border-bottom: 1px solid var(--background-modifier-accent, var(--background-mod-normal));
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.vc-rolemembers-perms-item:hover {
+    background-color: var(--background-modifier-hover, var(--background-mod-subtle));
+}
+
+.vc-rolemembers-perms-item-active {
+    background-color: var(--background-modifier-selected, var(--background-mod-strong));
+}
+
+.vc-rolemembers-perms-item:last-child {
+    border-bottom: 0;
+}
+
+.vc-rolemembers-perms-item-icon {
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.vc-rolemembers-perm-glyph {
+    flex-shrink: 0;
+    color: var(--interactive-normal);
+}
+
+.vc-rolemembers-perms-item-text {
+    flex: 1;
+    min-width: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.vc-rolemembers-perms-item .vc-info-icon {
+    color: var(--interactive-muted);
+    margin-left: auto;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color ease-in 0.1s;
+}
+
+.vc-rolemembers-perms-item .vc-info-icon:hover {
+    color: var(--interactive-active);
+}
+
+.vc-rolemembers-empty {
+    width: 100%;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: var(--text-muted);
+    padding: 16px;
+}
