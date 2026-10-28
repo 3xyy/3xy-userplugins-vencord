@@ -15,9 +15,26 @@ Exports Discord channels, DMs, group DMs, threads and whole servers to a single 
 
 ## Screenshots
 
-![The Export window for a channel](../assets/exportChat/export-modal.png)
+| Export window | Password and admin mode |
+|---|---|
+| ![The Export window for a whole server](../assets/exportChat/modal1.png) | ![The Export window with a password and admin mode](../assets/exportChat/modal2.png) |
 
-![An exported HTML file open in a browser](../assets/exportChat/exported-page.png)
+![Highlighting messages and the export menu in a channel](../assets/exportChat/chatpreview1.png)
+
+![A message range marked in a channel](../assets/exportChat/range2.png)
+
+![An exported server open in a browser](../assets/exportChat/exported1.png)
+
+![An export in admin mode, with message editing tools](../assets/exportChat/admin.png)
+
+![Export history and settings](../assets/exportChat/settings.png)
+
+## Examples
+
+| Example | Description |
+|---|---|
+| [21f85bae.3xytils.pages.dev](https://21f85bae.3xytils.pages.dev) | A whole-server export, shared through Cloudflare Pages. |
+| [53441ffa.3xytils.pages.dev](https://53441ffa.3xytils.pages.dev) | A message-range export with a password and admin mode. Password: `123`. |
 
 ## Usage
 

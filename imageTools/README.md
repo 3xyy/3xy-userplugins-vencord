@@ -14,7 +14,15 @@ Adds an image editor for attachments before they are sent: annotate, blur, pixel
 
 ## Screenshots
 
-![The image editor with an arrow, text and a blurred area](../assets/imageTools/editor.png)
+| Before | After |
+|---|---|
+| ![An attached image with the Edit image button](../assets/imageTools/before.png) | ![The same attachment after editing](../assets/imageTools/after.png) |
+
+![The editor with the brush and color picker](../assets/imageTools/edit.png)
+
+![The editor with shapes, an inserted image, pixelate, blur and the crop tool](../assets/imageTools/edit2.png)
+
+![ImageTools settings](../assets/imageTools/settings.png)
 
 ## Usage
 

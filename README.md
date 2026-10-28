@@ -2,13 +2,15 @@
 
 my overengineered s-tier vencord userplugins
 
+![The five plugins in Vencord's plugin list](assets/plugins.png)
+
 Userplugins for [Vencord](https://vencord.dev). Each plugin folder has its own README.
 
 ## Plugins
 
 | Plugin | Purpose |
 |---|---|
-| [ExportChat](exportChat) | Exports channels, DMs and servers to a single HTML file that renders like Discord. |
+| [ExportChat](exportChat) | Exports channels, DMs and servers to a single HTML file that renders like Discord. [Live examples](exportChat/README.md#examples). |
 | [ImageTools](imageTools) | Edits attached images before sending: annotate, blur, crop, rotate and resize. |
 | [Output2Input (o2i)](o2i) | Mixes a processed mic, app audio, a soundboard and text to speech into one virtual mic. Windows only. |
 | [RoleMembers](roleMembers) | Shows a server's roles, their permissions and their members in one window. |
@@ -66,16 +68,16 @@ Setup steps are in the [o2i README](o2i/README.md).
 
 <table>
   <tr>
-    <td width="50%"><img src="assets/o2i/panel-mic.png" alt="The o2i panel, Mic tab"></td>
-    <td width="50%"><img src="assets/imageTools/editor.png" alt="The ImageTools editor"></td>
+    <td width="50%"><img src="assets/o2i/fullscreen2.png" alt="The o2i panel, Mic tab"></td>
+    <td width="50%"><img src="assets/imageTools/edit2.png" alt="The ImageTools editor"></td>
   </tr>
   <tr>
     <td align="center">Output2Input</td>
     <td align="center">ImageTools</td>
   </tr>
   <tr>
-    <td width="50%"><img src="assets/roleMembers/modal.png" alt="The RoleMembers window"></td>
-    <td width="50%"><img src="assets/exportChat/exported-page.png" alt="An ExportChat export open in a browser"></td>
+    <td width="50%"><img src="assets/roleMembers/role.png" alt="The RoleMembers window"></td>
+    <td width="50%"><img src="assets/exportChat/exported1.png" alt="An ExportChat export open in a browser"></td>
   </tr>
   <tr>
     <td align="center">RoleMembers</td>

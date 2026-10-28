@@ -14,7 +14,9 @@ Shows the current song in the custom status, as a rich presence activity, or bot
 
 ## Screenshots
 
-![SpotifyStatus settings with the live preview](../assets/spotifyStatus/settings.png)
+| Preview and source | Filters | Icons and rich presence |
+|---|---|---|
+| ![SpotifyStatus settings with the live preview](../assets/spotifyStatus/settings1.png) | ![Rich presence options and filters](../assets/spotifyStatus/settings2.png) | ![Icons, emoji and rich presence lines](../assets/spotifyStatus/settings3.png) |
 
 ## Usage
 

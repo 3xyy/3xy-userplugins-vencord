@@ -13,7 +13,15 @@ Shows a server's roles, their permissions and their members in one three-column 
 
 ## Screenshots
 
-![The three-column roles window](../assets/roleMembers/modal.png)
+![The Role Members entry in the server menu](../assets/roleMembers/button.png)
+
+![A role selected: its permissions and members](../assets/roleMembers/role.png)
+
+![A permission selected: every role and member that has it](../assets/roleMembers/permission.png)
+
+![A member selected: their roles and combined permissions](../assets/roleMembers/user.png)
+
+![RoleMembers settings](../assets/roleMembers/settings.png)
 
 ## Usage
 

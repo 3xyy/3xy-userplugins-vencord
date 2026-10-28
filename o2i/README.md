@@ -16,11 +16,13 @@ Vencord's plugin list shows it as **Output2Input**. The button and panel use **o
 
 ## Screenshots
 
-![The o2i button next to Discord's mute and deafen buttons](../assets/o2i/button.png)
+![The o2i panel above Discord's mute and deafen buttons](../assets/o2i/panel.png)
 
-| Mic | Soundboard | Apps |
-|---|---|---|
-| ![The o2i panel, Mic tab](../assets/o2i/panel-mic.png) | ![The o2i panel, Soundboard tab with Text to speech](../assets/o2i/panel-soundboard.png) | ![The o2i panel, Apps tab](../assets/o2i/panel-apps.png) |
+| Mic | Soundboard |
+|---|---|
+| ![The expanded o2i panel, Mic tab](../assets/o2i/fullscreen2.png) | ![The expanded o2i panel, Soundboard tab with Text to speech](../assets/o2i/fullscreen.png) |
+
+![Output2Input settings](../assets/o2i/settings.png)
 
 ## How it works
 
