@@ -4,12 +4,12 @@ Source code of `o2i.exe`, the audio engine behind the [Output2Input](../o2i) plu
 
 ## What it does
 
-- Captures the microphone and processes it: noise removal (RNNoise, through the `nnnoiseless` crate), noise gate, auto gain, voice effect (Signalsmith Stretch), the Quality stage, mute and push to talk.
+- Captures the microphone and processes it: noise removal (RNNoise, through the `nnnoiseless` crate), noise gate (40 ms of added latency, ignores sounds shorter than about 30 ms), auto gain, voice effect (Signalsmith Stretch), the Quality stage, mute and push to talk.
 - Captures selected apps with Windows per-process loopback capture. The apps keep playing on their normal output.
 - Plays soundboard files (MP3, WAV, OGG, FLAC, M4A, AAC), decoded with Symphonia and resampled with Rubato.
 - Speaks text with Windows voices (WinRT `SpeechSynthesizer`) or Piper voices.
 - Mixes everything into VB-CABLE's input, which Discord uses as a microphone.
-- Handles hotkeys. Soundboard hotkeys use `RegisterHotKey` (through the `global-hotkey` crate). The mute and push to talk keys use low-level keyboard and mouse hooks, so they work while a game has focus and the key still reaches the game.
+- Handles hotkeys. Keyboard soundboard hotkeys use `RegisterHotKey` (through the `global-hotkey` crate) and do not reach the focused app. Mouse soundboard hotkeys (Mouse3 to Mouse5, alone or with Ctrl, Alt, Shift or Win), the mute key and the push to talk key use low-level hooks, so they work while a game has focus and the press still reaches the focused app.
 
 The audio threads are lock-free, allocation-free and panic-free. File reads and writes, decoding, downloads and speech synthesis run on other threads.
 

@@ -1357,6 +1357,13 @@ assert.equal(ic({ wasOnCable: false, onCable: true }), "none");
 assert.equal(ic({ powered: false }), "none");
 assert.equal(ic({ powered: false, saved: false }), "none");
 assert.equal(ic({ powered: true }), "mute-discord"); // on (absent counts as on, as above)
+// push to talk counts as muted: the mic is closed by the key, so Discord on the real mic is self-muted
+assert.equal(ic({ muted: false, pttMode: true }), "mute-discord");
+assert.equal(ic({ muted: false, pttMode: true, saved: false }), "mute-discord");
+assert.equal(ic({ muted: false, pttMode: false }), "none");
+assert.equal(ic({ muted: false, pttMode: true, ownSwitch: true }), "none");
+assert.equal(ic({ muted: false, pttMode: true, onCable: true }), "none");
+assert.equal(ic({ muted: false, pttMode: true, powered: false }), "none");
 // the same answer as o2iMuteTransition for that mute change
 assert.equal(ic({}), o2iMuteTransition(true, () => false, null));
 

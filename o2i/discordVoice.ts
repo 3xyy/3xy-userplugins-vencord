@@ -494,6 +494,7 @@ function checkInputChange() {
             onCable: now.onCable,
             ownSwitch,
             muted: effectiveMicMuted(),
+            pttMode: isPttMode(settings.store.profile),
             saved: savedMute(),
             powered: settings.store.powered !== false,
         });

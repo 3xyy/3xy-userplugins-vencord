@@ -172,7 +172,7 @@ export function pttModeTransition(ptt: boolean, muted: boolean, onCable: () => b
 }
 
 /**
- * Discord's input changed. Moving off exactly CABLE Output while o2i's mic is muted, other than by the
+ * Discord's input changed. Moving off exactly CABLE Output while o2i's mic is muted or in push to talk, other than by the
  * plugin's own switch (the fallback, power and restore paths apply the mute rule themselves), runs
  * `o2iMuteTransition` once for that mute: Discord may now be on the real mic, which o2i's mute can't reach.
  * Never lifts (only o2i's own unmute does). Nothing while o2i is turned off (`powered` false): its mute isn't
@@ -187,8 +187,10 @@ export function inputChangeTransition(s: {
     saved: boolean | null;
     /** The power button's state; absent counts as on. */
     powered?: boolean;
+    /** Push to talk: the mic is closed by the key, so it counts as muted here; absent counts as off. */
+    pttMode?: boolean;
 }): "mute-discord" | "none" {
-    if (s.powered === false || s.wasOnCable !== true || s.onCable || s.ownSwitch || !s.muted) return "none";
+    if (s.powered === false || s.wasOnCable !== true || s.onCable || s.ownSwitch || !(s.muted || s.pttMode)) return "none";
     return o2iMuteTransition(true, () => s.onCable, s.saved) === "mute-discord" ? "mute-discord" : "none";
 }
 

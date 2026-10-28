@@ -54,7 +54,7 @@ The header shows the engine status and four buttons: mute, power, export logs an
 | Voice, Intensity | Off, Deeper or Higher. |
 | Quality | Degrades the mic on purpose. 100 is the unmodified mic. |
 | Noise cleanup, Amount | Removes background noise. |
-| Noise gate, Auto | Mutes the mic below the white line on the level meter. Drag the line, or press **Auto** to follow the background noise. |
+| Noise gate, Auto | Mutes the mic below the white line on the level meter. Drag the line, or press **Auto** to follow the background noise. See [Noise gate notes](#noise-gate-notes). |
 | Auto gain | Keeps the voice at a steady loudness. |
 | Hear yourself | Plays the processed mic on the headphones, slightly delayed. |
 | Mic volume, Master | 0 to 200%. Master covers the mic, apps and sounds. |
@@ -70,7 +70,9 @@ The header shows the engine status and four buttons: mute, power, export logs an
 - **Override all sounds**, under **All sounds**, applies one set of levels to every sound.
 - **Now playing** has seek, pause, stop and volume per sound, plus **Stop all sounds** and a **Stop-all hotkey**.
 - **Add folder** adds a folder. o2i lists its MP3, WAV, OGG, FLAC, M4A and AAC files, without subfolders.
-- Sound hotkeys are F1 to F12, or a letter or digit with Ctrl or Alt (Shift optional). Unlike the mute and push to talk keys, they do not reach the focused app.
+- Sound hotkeys are F1 to F12, or a letter or digit with Ctrl or Alt (Shift optional), or Mouse3 to Mouse5 (middle and side buttons), alone or with Ctrl, Alt, Shift or Win.
+  - Keyboard sound hotkeys do not reach the focused app.
+  - Mouse sound hotkeys go through the low-level hook, so the press also reaches the focused app. When Discord itself is focused, Mouse4 and Mouse5 also act as back and forward in Discord.
 - On first start, o2i copies two sounds to `%APPDATA%\o2i\sounds` and adds that folder once.
 
 ### Push to talk
@@ -80,6 +82,14 @@ The header shows the engine status and four buttons: mute, power, export logs an
 - Mute overrides push to talk. With no key set, the mic stays closed.
 - Keep Discord's own push to talk off.
 
+### Noise gate notes
+
+- With the gate on, the mic has 40 ms of added latency.
+- Sounds shorter than about 30 ms, such as keyboard clicks, never open the gate.
+- Auto sets the threshold at least 6 dB above the raw mic floor.
+- Clicks heard while talking are not removed.
+- In a loud, steady background, a very quiet voice may not open the gate in Auto. Use a manual threshold.
+
 ### Text to speech
 
 1. In the Soundboard tab, click **Show** next to **Text to speech**.
@@ -88,6 +98,7 @@ The header shows the engine status and four buttons: mute, power, export logs an
 
 - Speech plays into the call through the soundboard, at the **All sounds** levels, and appears in **Now playing**.
 - A natural voice is about 60 MB. The first one also downloads the 22 MB Piper runtime. Downloads come over HTTPS from the official rhasspy repositories, are checked against pinned SHA-256 hashes and work offline afterwards.
+- If natural voices stop working, delete `%APPDATA%\o2i\tts\runtime` and install a voice again to reinstall the runtime.
 - Six English voices are available. Each has its own dataset license. Voices are downloaded by the user, not bundled with o2i.
 
 ## Settings
