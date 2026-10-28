@@ -27,11 +27,12 @@ import { discordSoundsStatus } from "./discordSounds";
 import { olog } from "./log";
 import {
     defaultInputId, episodeCheck, fallbackDecision, fallbackMuteDecision, inputChangeTransition, isOwnInputSwitch, mayBeOnO2i, muteRestoreDue, namedDevicesListed,
-    o2iMuteTransition, onCableExactly, pickFallbackMic, pickRealMic, savedAfterHandChange
+    o2iMuteTransition, onCableExactly, pickFallbackMic, pickRealMic, pttModeTransition, savedAfterHandChange
 } from "./logic/fallback";
 import { type Dev, findCableOutput } from "./logic/match";
 import type { AudioStatus, EngineStatus } from "./logic/policy";
 import { restoreCheck } from "./logic/power";
+import { isPttMode } from "./logic/profile";
 import { effectiveMicMuted, subscribeMuteSupport } from "./micMuteState";
 import { settings } from "./settings";
 import type { DiscordVoiceSnapshot } from "./types";
@@ -574,13 +575,13 @@ export function forgetSavedDiscordMute(why: string): void {
  */
 function applyMuteRule(phase: "fallback" | "recover", why: string): string | null {
     try {
-        const d = fallbackMuteDecision(effectiveMicMuted(), discordSelfMuted(), phase, savedMute());
+        const d = fallbackMuteDecision(effectiveMicMuted(), discordSelfMuted(), phase, savedMute(), isPttMode(settings.store.profile));
         saveMute(d.saveDiscordMute);
         if (d.setDiscordMute !== null) {
             requestedSelfMute = { value: d.setDiscordMute, at: performance.now() };
             setters().selfMute(d.setDiscordMute);
             olog.info(phase === "fallback"
-                ? `Discord self-muted: ${why} while o2i's mic is muted`
+                ? `Discord self-muted: ${why} while o2i's mic is muted or in push to talk`
                 : `Discord's own mute put back (${d.setDiscordMute ? "muted" : "unmuted"}): ${why}`);
         }
         return d.toastSuffix;
@@ -753,7 +754,7 @@ export function followO2iMute(muted: boolean): void {
     try {
         lastEffectiveMute = muted;
         checkHandUnmute();
-        const t = o2iMuteTransition(muted, discordOnCable, savedMute());
+        const t = o2iMuteTransition(muted, discordOnCable, savedMute(), isPttMode(settings.store.profile));
         if (t === "mute-discord") {
             muteForRealMic("o2i's mic was muted while Discord isn't on CABLE Output");
         } else if (t === "lift") {
@@ -762,6 +763,26 @@ export function followO2iMute(muted: boolean): void {
         }
     } catch (e) {
         olog.error("couldn't apply o2i's mute to Discord", e);
+    }
+}
+
+/**
+ * The mic mode changed (settings.ts `updateProfile`); silent. Entering push to talk while Discord isn't surely
+ * on CABLE self-mutes it (its own mute saved); leaving it lifts o2i's self-mute (`pttModeTransition`).
+ * Does nothing while the plugin isn't watching (stopped) or o2i is off. Never throws.
+ */
+export function followPttMode(ptt: boolean): void {
+    try {
+        if (!watchingDiscordMute || settings.store.powered === false) return;
+        const t = pttModeTransition(ptt, effectiveMicMuted(), discordOnCable, savedMute());
+        if (t === "mute-discord") {
+            muteForRealMic("push to talk was turned on while Discord isn't on CABLE Output");
+        } else if (t === "lift") {
+            muteRestoreSince = null;
+            applyMuteRule("recover", "push to talk was turned off");
+        }
+    } catch (e) {
+        olog.error("couldn't apply the mic mode to Discord", e);
     }
 }
 

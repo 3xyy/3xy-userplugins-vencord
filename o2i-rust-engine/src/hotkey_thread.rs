@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::Profile;
 use crate::hotkeys::{parse_accel, Hotkeys};
+use crate::llhooks::{parse_mute_spec, MuteBinding, MAX_MOUSE_SOUND_BINDINGS};
 
 /// How a profile names a sound (`sb_clip_hotkeys[][0]`, `sb_clip_settings[].name`).
 #[derive(Clone, Debug, PartialEq)]
@@ -78,6 +79,61 @@ pub fn bindings_from_profile(p: &Profile) -> Vec<(String, HotkeyAction)> {
         out.push((accel.clone(), HotkeyAction::StopAll));
     }
     out
+}
+
+/// A soundboard binding served by the mouse hook.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MouseBind {
+    pub accel: String,
+    pub binding: MuteBinding,
+    pub action: HotkeyAction,
+}
+
+/// The profile's bindings split by who serves them.
+#[derive(Debug, Default, PartialEq)]
+pub struct BindingPlan {
+    /// Keyboard (and unparseable) bindings, for the `global-hotkey` thread.
+    pub keyboard: Vec<(String, HotkeyAction)>,
+    /// Mouse bindings to register with the mouse hook, in order.
+    pub mouse: Vec<MouseBind>,
+    /// `(accel, message)` for mouse bindings that can't be registered.
+    pub errors: Vec<(String, String)>,
+}
+
+/// Split `binds`: a binding whose trigger is Mouse3/4/5 (bare or with
+/// modifiers) goes to the mouse hook, everything else stays on
+/// `global-hotkey`. A mouse binding is refused (an error, not registered)
+/// when it equals an earlier mouse binding ("already bound", as on the
+/// keyboard path), overlaps the mute or PTT key (`reserved`: `(name, spec)`),
+/// or is past `MAX_MOUSE_SOUND_BINDINGS`.
+pub fn plan_bindings(
+    binds: Vec<(String, HotkeyAction)>,
+    reserved: &[(&str, MuteBinding)],
+) -> BindingPlan {
+    let mut plan = BindingPlan::default();
+    for (accel, action) in binds {
+        let Some(binding) = parse_mute_spec(&accel).ok().filter(|b| b.is_mouse()) else {
+            plan.keyboard.push((accel, action));
+            continue;
+        };
+        if plan.mouse.iter().any(|m| m.binding == binding) {
+            plan.errors
+                .push((accel, "already bound to another action".to_string()));
+        } else if let Some((name, _)) = reserved.iter().find(|(_, r)| r.overlaps(binding)) {
+            let message = format!("{accel} is already the {name}");
+            plan.errors.push((accel, message));
+        } else if plan.mouse.len() >= MAX_MOUSE_SOUND_BINDINGS {
+            plan.errors
+                .push((accel, "Too many mouse hotkeys".to_string()));
+        } else {
+            plan.mouse.push(MouseBind {
+                accel,
+                binding,
+                action,
+            });
+        }
+    }
+    plan
 }
 
 const UNAVAILABLE: &str = "global hotkeys unavailable";
@@ -626,6 +682,26 @@ mod tests {
         assert!(f.is_empty(), "binding never re-registered: {f:?}");
         // A recovery is silent: no second one-shot error.
         assert!(recv_within(&t, Duration::from_millis(100)).is_empty());
+    }
+
+    #[test]
+    fn plan_splits_mouse_from_keyboard() {
+        let clip = |n: &str| HotkeyAction::Clip(n.into());
+        let plan = plan_bindings(
+            vec![
+                ("F8".into(), clip("a.mp3")),
+                ("Mouse4".into(), clip("b.mp3")),
+                ("Ctrl+Mouse5".into(), clip("c.mp3")),
+                ("Mouse9".into(), clip("d.mp3")),
+                ("Ctrl+F12".into(), HotkeyAction::StopAll),
+            ],
+            &[],
+        );
+        let kb: Vec<&str> = plan.keyboard.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(kb, ["F8", "Mouse9", "Ctrl+F12"]);
+        let mouse: Vec<&str> = plan.mouse.iter().map(|m| m.accel.as_str()).collect();
+        assert_eq!(mouse, ["Mouse4", "Ctrl+Mouse5"]);
+        assert!(plan.errors.is_empty());
     }
 
     #[test]

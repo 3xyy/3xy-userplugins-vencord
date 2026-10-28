@@ -26,6 +26,14 @@ pub enum Command {
     ListDevices,
     ListApps,
     ListClips,
+    /// List the Windows (and, later, Piper) text-to-speech voices.
+    ListTtsVoices,
+    /// Speak `text` with `voice` (`win:<id>` / `piper:<name>`) through the
+    /// soundboard path. `rate` (null = 1) is clamped to 0.5..=2.
+    Speak { text: String, voice: String, rate: Option<f64> },
+    /// Download and install the Piper voice `id` (`piper:<name>`), plus the
+    /// Piper runtime when it is missing. Progress is `state.tts_install`.
+    InstallTtsVoice { id: String },
     Shutdown,
 }
 
@@ -85,6 +93,18 @@ pub struct StateEv {
     pub gate_threshold_live: Option<f32>,
     /// The mic is muted (whether or not audio runs).
     pub mic_muted: bool,
+    /// The mic is audible: not muted, and in push-to-talk mode the key is
+    /// held or in its release tail.
+    pub mic_open: bool,
+    /// The Piper voice being installed and its progress (0..1); `None` when
+    /// no install runs.
+    pub tts_install: Option<TtsInstallJson>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct TtsInstallJson {
+    pub id: String,
+    pub progress: f32,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -122,6 +142,9 @@ pub enum Event {
     HotkeyError { accel: String, message: String },
     /// The mic mute changed (sent once per change, right away).
     MicMuted { muted: bool, source: MuteSource },
+    /// `mic_open` changed (sent once per change).
+    MicOpen { open: bool },
+    TtsVoices { voices: Vec<crate::tts::Voice> },
     Error { message: String },
 }
 
@@ -257,6 +280,50 @@ mod tests {
     }
 
     #[test]
+    fn parse_speak() {
+        match parse_command(r#"{"cmd":"speak","text":"hi","voice":"win:x","rate":1.5}"#).unwrap() {
+            Command::Speak { text, voice, rate } => {
+                assert_eq!((text.as_str(), voice.as_str()), ("hi", "win:x"));
+                assert_eq!(rate, Some(1.5));
+            }
+            other => panic!("wrong variant {other:?}"),
+        }
+        match parse_command(r#"{"cmd":"speak","text":"hi","voice":"win:x"}"#).unwrap() {
+            Command::Speak { rate, .. } => assert_eq!(rate, None),
+            other => panic!("wrong variant {other:?}"),
+        }
+        match parse_command(r#"{"cmd":"speak","text":"hi","voice":"win:x","rate":null}"#).unwrap() {
+            Command::Speak { rate, .. } => assert_eq!(rate, None),
+            other => panic!("wrong variant {other:?}"),
+        }
+        assert!(parse_command(r#"{"cmd":"speak","voice":"win:x"}"#).is_err());
+        assert!(matches!(parse_command(r#"{"cmd":"list_tts_voices"}"#).unwrap(), Command::ListTtsVoices));
+    }
+
+    #[test]
+    fn parse_install_tts_voice() {
+        match parse_command(r#"{"cmd":"install_tts_voice","id":"piper:x"}"#).unwrap() {
+            Command::InstallTtsVoice { id } => assert_eq!(id, "piper:x"),
+            other => panic!("{other:?}"),
+        }
+        assert!(parse_command(r#"{"cmd":"install_tts_voice"}"#).is_err());
+    }
+
+    #[test]
+    fn tts_voices_event_serializes() {
+        let ev = Event::TtsVoices {
+            voices: vec![
+                crate::tts::Voice { id: "win:A".into(), name: "A".into(), source: "windows", installed: true, size_mb: None },
+                crate::tts::Voice { id: "piper:b".into(), name: "B".into(), source: "piper", installed: false, size_mb: Some(60) },
+            ],
+        };
+        assert_eq!(
+            serde_json::to_string(&ev).unwrap(),
+            r#"{"ev":"tts_voices","voices":[{"id":"win:A","name":"A","source":"windows","installed":true},{"id":"piper:b","name":"B","source":"piper","installed":false,"size_mb":60}]}"#
+        );
+    }
+
+    #[test]
     fn parses_seek_clip() {
         match parse_command(r#"{"cmd":"seek_clip","id":7,"pos_s":42.5}"#).unwrap() {
             Command::SeekClip { id, pos_s } => {
@@ -315,10 +382,12 @@ mod tests {
             hotkey_errors: vec![HotkeyErrorJson { accel: "F8".into(), message: "taken".into() }],
             gate_threshold_live: Some(0.25),
             mic_muted: true,
+            mic_open: false,
+            tts_install: Some(TtsInstallJson { id: "piper:b".into(), progress: 0.5 }),
         });
         assert_eq!(
             serde_json::to_string(&ev).unwrap(),
-            r#"{"ev":"state","audio":"running","error":null,"input_level":0.5,"playing":[{"id":1,"name":"a.mp3","pos_s":1.0,"len_s":null,"paused":false,"path":"C:\\s\\a.mp3"},{"id":2,"name":"b.mp3","pos_s":0.0,"len_s":2.0,"paused":true,"path":null}],"apps":[{"name":"Spotify.exe","attached":true}],"hotkey_errors":[{"accel":"F8","message":"taken"}],"gate_threshold_live":0.25,"mic_muted":true}"#
+            r#"{"ev":"state","audio":"running","error":null,"input_level":0.5,"playing":[{"id":1,"name":"a.mp3","pos_s":1.0,"len_s":null,"paused":false,"path":"C:\\s\\a.mp3"},{"id":2,"name":"b.mp3","pos_s":0.0,"len_s":2.0,"paused":true,"path":null}],"apps":[{"name":"Spotify.exe","attached":true}],"hotkey_errors":[{"accel":"F8","message":"taken"}],"gate_threshold_live":0.25,"mic_muted":true,"mic_open":false,"tts_install":{"id":"piper:b","progress":0.5}}"#
         );
     }
 
@@ -333,10 +402,12 @@ mod tests {
             hotkey_errors: vec![],
             gate_threshold_live: None,
             mic_muted: false,
+            mic_open: true,
+            tts_install: None,
         });
         assert_eq!(
             serde_json::to_string(&ev).unwrap(),
-            r#"{"ev":"state","audio":"off","error":null,"input_level":0.0,"playing":[],"apps":[],"hotkey_errors":[],"gate_threshold_live":null,"mic_muted":false}"#
+            r#"{"ev":"state","audio":"off","error":null,"input_level":0.0,"playing":[],"apps":[],"hotkey_errors":[],"gate_threshold_live":null,"mic_muted":false,"mic_open":true,"tts_install":null}"#
         );
     }
 

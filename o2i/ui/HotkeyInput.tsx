@@ -5,8 +5,8 @@
  */
 
 import { classNameFactory } from "@utils/css";
-import { useRef, useState } from "@webpack/common";
-import type { KeyboardEvent, MouseEvent } from "react";
+import { useEffect, useRef, useState } from "@webpack/common";
+import type { KeyboardEvent } from "react";
 
 import { hotkeyProblem, type HotkeyRow, keyEventToAccel, keyEventToMuteSpec, mouseButtonToMuteSpec } from "../logic/accel";
 import { useEngineValue } from "./useEngineValue";
@@ -24,22 +24,24 @@ const MODIFIER_KEYS = ["Control", "Shift", "Alt", "Meta"];
 /**
  * Click to record: the next key press becomes the hotkey (Escape cancels, Backspace clears).
  * `validate` returns a message to reject an accel (e.g. already bound elsewhere).
- * `kind="mute"` (the mic mute key): any key, also on its own, Win combos, and the middle or side mouse
- * buttons (pressed over the recorder while it records). Soundboard rows keep their rules.
+ * `kind="mute"` (the mic mute and push-to-talk keys): any key, also on its own, and Win combos.
+ * `kind="soundboard"`: F-keys, or a letter or digit with Ctrl or Alt.
+ * Every row also takes the middle or side mouse buttons (Mouse3-5, with any modifiers) pressed anywhere
+ * in the window while it records.
  */
-export function HotkeyInput({ value, onChange, validate, kind = "soundboard" }: {
+export function HotkeyInput({ value, onChange, validate, kind = "soundboard", disabled }: {
     value: string | null;
     onChange(v: string | null): void;
     validate?(accel: string): string | null;
     kind?: HotkeyRow;
+    /** Inert: the buttons are disabled (nothing can be recorded or cleared). */
+    disabled?: boolean;
 }) {
     const [recording, setRecording] = useState(false);
     const [notice, setNotice] = useState<string | null>(null);
-    /**
-     * The mouse button just recorded: its mouseup / auxclick is swallowed too (no middle-click autoscroll).
-     * Discord's main process still turns the side buttons into back / forward; nothing here can stop that.
-     */
-    const swallowButton = useRef<number | null>(null);
+    const btnRef = useRef<HTMLButtonElement>(null);
+    /** Removes the listeners that swallow the recorded mouse button's release (see `swallowRelease`). */
+    const releaseCleanup = useRef<(() => void) | null>(null);
     const engineError = useHotkeyError(value);
     const mute = kind === "mute";
 
@@ -58,6 +60,58 @@ export function HotkeyInput({ value, onChange, validate, kind = "soundboard" }: 
         stop();
         if (accel !== value) onChange(accel);
         return true;
+    };
+
+    // Latest commit / stop for the window listener below, which is only attached while recording.
+    const live = useRef({ commit, stop });
+    live.current = { commit, stop };
+
+    useEffect(() => () => releaseCleanup.current?.(), []);
+
+    // While recording, a mouse button pressed anywhere in the window is the hotkey. Left click elsewhere
+    // cancels (as clicking away always did); left click on the recorder and right click are left alone.
+    useEffect(() => {
+        if (!recording) return;
+        const onDown = (e: globalThis.MouseEvent) => {
+            const spec = mouseButtonToMuteSpec(e);
+            if (!spec) {
+                if (e.button === 0 && !btnRef.current?.contains(e.target as Node | null)) live.current.stop();
+                return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            swallowRelease(e.button);
+            live.current.commit(spec);
+        };
+        window.addEventListener("mousedown", onDown, true);
+        return () => window.removeEventListener("mousedown", onDown, true);
+    }, [recording]);
+
+    /**
+     * The recorded button's mouseup / auxclick is swallowed too (no middle-click autoscroll or paste).
+     * Discord's main process still turns the side buttons into back / forward; nothing here can stop that.
+     */
+    const swallowRelease = (button: number) => {
+        releaseCleanup.current?.();
+        const kill = (e: globalThis.MouseEvent) => {
+            if (e.button !== button) return;
+            e.preventDefault();
+            e.stopPropagation();
+        };
+        let timer: number | undefined;
+        const done = () => {
+            window.clearTimeout(timer);
+            window.removeEventListener("mouseup", onUp, true);
+            window.removeEventListener("auxclick", kill, true);
+            releaseCleanup.current = null;
+        };
+        const onUp = (e: globalThis.MouseEvent) => {
+            kill(e);
+            if (e.button === button) timer = window.setTimeout(done, 50); // auxclick follows the mouseup
+        };
+        window.addEventListener("mouseup", onUp, true);
+        window.addEventListener("auxclick", kill, true);
+        releaseCleanup.current = done;
     };
 
     const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
@@ -85,32 +139,14 @@ export function HotkeyInput({ value, onChange, validate, kind = "soundboard" }: 
         const accel = keyEventToAccel(e);
         if (!accel) {
             if (!MODIFIER_KEYS.includes(e.key)) {
-                setNotice("Use F1-F12, or a letter or digit with Ctrl or Alt (Shift optional)");
+                setNotice("Use F1-F12, a letter or digit with Ctrl or Alt, or a mouse button");
             }
             return;
         }
         commit(accel);
     };
 
-    // Mute row only, and only while recording: a normal click (or any click while not recording) is left alone.
-    const onMouseDown = (e: MouseEvent<HTMLButtonElement>) => {
-        if (!mute || !recording) return;
-        const spec = mouseButtonToMuteSpec(e);
-        if (!spec) return; // left click keeps recording, right click does nothing
-        e.preventDefault();
-        e.stopPropagation();
-        swallowButton.current = e.button;
-        commit(spec);
-    };
-
-    const swallowUp = (e: MouseEvent<HTMLButtonElement>) => {
-        if (swallowButton.current === null || e.button !== swallowButton.current) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.type === "auxclick") swallowButton.current = null;
-    };
-
-    const prompt = mute ? "Press a key or mouse button… (Esc to cancel, Backspace to clear)" : "Press a key… (Esc to cancel, Backspace to clear)";
+    const prompt = "Press a key or mouse button… (Esc to cancel, Backspace to clear)";
 
     return (
         <div className={cl("hotkey")}>
@@ -122,12 +158,11 @@ export function HotkeyInput({ value, onChange, validate, kind = "soundboard" }: 
                         setNotice(null);
                         setRecording(true);
                     }}
+                    disabled={disabled}
                     onKeyDown={onKeyDown}
-                    onMouseDown={onMouseDown}
-                    onMouseUp={swallowUp}
-                    onAuxClick={swallowUp}
+                    ref={btnRef}
                     onContextMenu={e => {
-                        if (mute && recording) e.preventDefault();
+                        if (recording) e.preventDefault();
                     }}
                     onBlur={stop}
                 >
@@ -137,6 +172,7 @@ export function HotkeyInput({ value, onChange, validate, kind = "soundboard" }: 
                     <button
                         type="button"
                         className={cl("mini-btn")}
+                        disabled={disabled}
                         aria-label="Clear hotkey"
                         title="Clear"
                         onClick={() => onChange(null)}

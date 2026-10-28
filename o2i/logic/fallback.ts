@@ -105,6 +105,8 @@ export function fallbackDecision(s: {
  * - `"fallback"` with o2i muted: self-mute Discord, remember Discord's mute from before (an earlier saved
  *   value is kept: by then Discord may be self-muted by o2i) and add ", muted" to the toast. With o2i not
  *   muted nothing changes (a saved value stays saved).
+ * - Push to talk counts the same as muted (`pttMode`): once o2i is down nothing gates the real mic, so it fails
+ *   closed whether or not the key is held. The toast suffix is the same.
  * - `"recover"` (Discord back on o2i): put back the saved mute, if any.
  * A saved value only counts while Discord is still self-muted: once he has unmuted Discord by hand it is
  * stale, so it is dropped, and a recovery never mutes him again.
@@ -114,14 +116,15 @@ export function fallbackMuteDecision(
     o2iMuted: boolean,
     discordSelfMuted: boolean,
     phase: "fallback" | "recover",
-    savedDiscordMute: boolean | null
+    savedDiscordMute: boolean | null,
+    pttMode = false
 ): { setDiscordMute: boolean | null; saveDiscordMute: boolean | null; toastSuffix: string | null; } {
     const saved = discordSelfMuted ? savedDiscordMute : null;
     if (phase === "recover") {
         const set = savedDiscordMute === true && !discordSelfMuted ? null : savedDiscordMute;
         return { setDiscordMute: set, saveDiscordMute: null, toastSuffix: null };
     }
-    if (!o2iMuted) return { setDiscordMute: null, saveDiscordMute: saved, toastSuffix: null };
+    if (!o2iMuted && !pttMode) return { setDiscordMute: null, saveDiscordMute: saved, toastSuffix: null };
     return { setDiscordMute: true, saveDiscordMute: saved ?? discordSelfMuted, toastSuffix: ", muted" };
 }
 
@@ -142,11 +145,30 @@ export function onCableExactly(inputId: string | null, devs: Dev[]): boolean {
  * - muted while Discord isn't surely on CABLE (`onCableExactly`; devices not listed counts as not on it):
  *   Discord may be on the real mic, which o2i's mute can't reach, so it is self-muted ("mute-discord");
  * - unmuted while a self-mute of o2i's is saved: lifted ("lift"). His own Discord mute is never touched.
- * Only on a change, never per tick: a deliberate unmute by hand stays. `onCable` is only called for a mute.
+ * - In push to talk (`pttMode`) the lift only happens once Discord is surely on CABLE: on the real mic nothing
+ *   gates the mic, so the self-mute stays (the saved value comes back with the restore).
+ * Only on a change, never per tick: a deliberate unmute by hand stays. `onCable` is only called for a mute,
+ * and for an unmute in push to talk.
  */
-export function o2iMuteTransition(muted: boolean, onCable: () => boolean, saved: boolean | null): "mute-discord" | "lift" | "none" {
+export function o2iMuteTransition(muted: boolean, onCable: () => boolean, saved: boolean | null, pttMode = false): "mute-discord" | "lift" | "none" {
     if (muted) return onCable() ? "none" : "mute-discord";
-    return saved !== null ? "lift" : "none";
+    if (saved === null) return "none";
+    if (pttMode && !onCable()) return "none";
+    return "lift";
+}
+
+/**
+ * The mic mode changed (Always on <-> Push to talk), in or out of an episode; `ptt` is the new mode, `muted`
+ * o2i's effective mute (a mute is followed by `o2iMuteTransition` already, so nothing here).
+ * - Entering push to talk while Discord isn't surely on CABLE: it may be on the real mic, which nothing gates
+ *   any more, so it is self-muted ("mute-discord").
+ * - Leaving it: like an unmute, a self-mute of o2i's is lifted.
+ * Only on a change of the mode. `onCable` is only called when it matters.
+ */
+export function pttModeTransition(ptt: boolean, muted: boolean, onCable: () => boolean, saved: boolean | null): "mute-discord" | "lift" | "none" {
+    if (muted) return "none";
+    if (ptt) return onCable() ? "none" : "mute-discord";
+    return o2iMuteTransition(false, onCable, saved);
 }
 
 /**

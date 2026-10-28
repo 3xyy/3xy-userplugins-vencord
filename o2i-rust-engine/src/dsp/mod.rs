@@ -4,6 +4,8 @@ pub mod gate;
 pub mod params;
 pub mod suppress;
 mod voice;
+#[cfg(test)]
+mod click_tests;
 
 use std::sync::Arc;
 
@@ -21,6 +23,9 @@ const TRACK_BLOCK: usize = 480;
 /// Samples the mute gain takes to move between 0 and 1 (10 ms of mono at
 /// 48 kHz), so muting and unmuting never click.
 const MUTE_RAMP: usize = 480;
+/// Push-to-talk release tail: the mic stays open this long (200 ms of mono
+/// at 48 kHz) after the key goes up, so the end of a word isn't clipped.
+const PTT_TAIL: usize = 9_600;
 
 /// The mic-channel processing chain: Suppress -> Gate -> AGC -> Voice -> Quality
 /// -> Volume -> Mute. Operates on mono f32 in [-1, 1]. Reads live parameters
@@ -28,13 +33,27 @@ const MUTE_RAMP: usize = 480;
 pub struct MicChain {
     params: Arc<MicParams>,
     gate: NoiseGate,
-    /// Auto gate: noise floor of the gate's input, fed in `TRACK_BLOCK`s.
+    /// Auto gate: noise floor of the gate's input (after suppression), fed in
+    /// `TRACK_BLOCK`s.
     floor: NoiseFloorTracker,
     /// Sum of squares / sample count of the tracking block in progress.
     track_sum: f32,
     track_len: usize,
-    /// The auto threshold in use (linear RMS); 0 until the floor is known.
+    /// Auto gate: noise floor of the raw mic input (before suppression). The
+    /// suppressor can push steady noise 30+ dB down, which would leave the
+    /// threshold far below what a click lets through, so the threshold never
+    /// goes under this floor + margin.
+    raw_floor: NoiseFloorTracker,
+    raw_sum: f32,
+    raw_len: usize,
+    /// Each floor's threshold (floor + margin), and the one in use: their
+    /// max (linear RMS); 0 until a floor is known.
+    post_threshold: f32,
+    raw_threshold: f32,
     auto_threshold: f32,
+    /// Whether the gate ran on the previous call (its lookahead ring is stale
+    /// after a bypass).
+    gate_was_on: bool,
     auto_was_on: bool,
     agc: Agc,
     suppress: Suppressor,
@@ -46,6 +65,10 @@ pub struct MicChain {
     /// Output gain of the mute stage, ramped per sample toward 0 (muted) or
     /// 1 (unmuted).
     mute_gain: f32,
+    /// Push-to-talk tail samples left. Counted per processed block: the gate
+    /// is decided once per block (block-accurate, not sample-accurate), so
+    /// the tail is 200 ms to within one capture block.
+    ptt_tail_left: usize,
 }
 
 impl MicChain {
@@ -55,7 +78,13 @@ impl MicChain {
             floor: NoiseFloorTracker::new(),
             track_sum: 0.0,
             track_len: 0,
+            raw_floor: NoiseFloorTracker::new(),
+            raw_sum: 0.0,
+            raw_len: 0,
+            post_threshold: 0.0,
+            raw_threshold: 0.0,
             auto_threshold: 0.0,
+            gate_was_on: false,
             auto_was_on: false,
             agc: Agc::new(),
             suppress: Suppressor::new(),
@@ -65,7 +94,13 @@ impl MicChain {
             degrade: Degrade::new(params.mic_quality()),
             // Already muted (audio restarted while muted): start silent
             // rather than ramping down from full level.
-            mute_gain: if params.mic_muted() { 0.0 } else { 1.0 },
+            // Same for push-to-talk: a new chain starts closed.
+            mute_gain: if params.mic_muted() || params.ptt_mode() {
+                0.0
+            } else {
+                1.0
+            },
+            ptt_tail_left: 0,
             params,
         }
     }
@@ -115,13 +150,22 @@ impl MicChain {
 
         // Stage 3: gate, on its RMS detector in both modes. The threshold is
         // a linear RMS level on the meter's scale, so the gate opens where the
-        // UI draws the line. Manual: `gate_threshold`. Auto: the tracked noise
-        // floor + margin (published as `gate_threshold_live`). The floor is
-        // tracked whenever auto is on (even with the gate itself off), so
-        // the live threshold is always meaningful.
+        // UI draws the line. Manual: `gate_threshold`. Auto: the higher of the
+        // post-suppression floor + margin and the raw-input floor + margin
+        // (published as `gate_threshold_live`). The floors are tracked
+        // whenever auto is on (even with the gate itself off), so the live
+        // threshold is always meaningful. The gate needs 40 ms above the
+        // threshold to open and delays the audio by 40 ms (see `NoiseGate`).
         let gate_on = self.params.gate_enabled();
         let auto = self.params.gate_auto();
         if auto {
+            if !self.auto_was_on {
+                // Auto off -> on: re-learn the raw floor too.
+                self.raw_floor.reset();
+                self.raw_sum = 0.0;
+                self.raw_len = 0;
+                self.raw_threshold = 0.0;
+            }
             if !self.auto_was_on || suppress_toggled {
                 // Auto off -> on, or the gate input level just jumped
                 // (suppression toggled): re-learn the floor from scratch
@@ -129,9 +173,24 @@ impl MicChain {
                 self.floor.reset();
                 self.track_sum = 0.0;
                 self.track_len = 0;
-                self.auto_threshold = 0.0;
+                self.post_threshold = 0.0;
+                self.auto_threshold = self.raw_threshold;
             }
             let margin = self.params.gate_auto_margin_db();
+            // Raw mic floor, from the undelayed, unsuppressed input.
+            for &x in input_mono.iter() {
+                self.raw_sum += x * x;
+                self.raw_len += 1;
+                if self.raw_len == TRACK_BLOCK {
+                    let rms = (self.raw_sum / TRACK_BLOCK as f32).sqrt();
+                    let open = rms >= self.auto_threshold;
+                    let floor = self.raw_floor.update(rms, open);
+                    self.raw_threshold = auto_threshold(floor, margin);
+                    self.auto_threshold = self.post_threshold.max(self.raw_threshold);
+                    self.raw_sum = 0.0;
+                    self.raw_len = 0;
+                }
+            }
             for &x in self.scratch.iter() {
                 self.track_sum += x * x;
                 self.track_len += 1;
@@ -142,26 +201,35 @@ impl MicChain {
                     // gaps between words and make open runs utterance-long.
                     let open = rms >= self.auto_threshold;
                     let floor = self.floor.update(rms, open);
-                    self.auto_threshold = auto_threshold(floor, margin);
+                    self.post_threshold = auto_threshold(floor, margin);
+                    self.auto_threshold = self.post_threshold.max(self.raw_threshold);
                     self.track_sum = 0.0;
                     self.track_len = 0;
                 }
             }
             self.params.set_gate_threshold_live(self.auto_threshold);
-            if gate_on {
-                self.gate
-                    .process_rms(&mut self.scratch, self.auto_threshold);
-            }
-        } else if gate_on {
-            self.gate
-                .process_rms(&mut self.scratch, self.params.gate_threshold());
         }
         self.auto_was_on = auto;
+        if gate_on {
+            if !self.gate_was_on {
+                self.gate.flush();
+            }
+            let threshold = if auto {
+                self.auto_threshold
+            } else {
+                self.params.gate_threshold()
+            };
+            self.gate.process_rms(&mut self.scratch, threshold);
+        }
+        self.gate_was_on = gate_on;
 
-        // Stage 4: AGC.
+        // Stage 4: AGC. It adapts only while the gate is open (or off): with
+        // the gate closed its gain holds, so the next click is not boosted by
+        // a gain that climbed on the gate's fade-out.
         if self.params.agc_enabled() {
+            let adapt = !gate_on || self.gate.is_open();
             self.agc
-                .process(&mut self.scratch, self.params.agc_target());
+                .process(&mut self.scratch, self.params.agc_target(), adapt);
         }
 
         // Stage 4.5: voice changer (pitch + formant). Bypassed when preset == Off.
@@ -181,14 +249,38 @@ impl MicChain {
         // Stage 6 - Mute, last so it silences exactly what Discord (and the
         // mic monitor) would hear. The stages above keep running while
         // muted, so unmuting resumes from settled gate/AGC/voice state.
-        apply_mute(
-            &mut self.mute_gain,
-            self.params.mic_muted(),
-            &mut self.scratch,
-        );
+        // Push-to-talk gates at the same point and reuses the same ramp.
+        // Mute always wins.
+        let ptt_open = self.ptt_gate_open(self.scratch.len());
+        let closed = self.params.mic_muted() || !ptt_open;
+        apply_mute(&mut self.mute_gain, closed, &mut self.scratch);
 
         // Stage 7 - Append work to output.
         out_mono.extend_from_slice(&self.scratch);
+    }
+}
+
+impl MicChain {
+    /// Whether push-to-talk lets this `block`-sample block through; always
+    /// true outside PTT mode. Open while the key is held, then for
+    /// `PTT_TAIL` samples after. Publishes the answer for the controller.
+    /// No allocation, no locks.
+    fn ptt_gate_open(&mut self, block: usize) -> bool {
+        if !self.params.ptt_mode() {
+            self.ptt_tail_left = 0;
+            return true;
+        }
+        let open = if self.params.ptt_held() {
+            self.ptt_tail_left = PTT_TAIL;
+            true
+        } else if self.ptt_tail_left > 0 {
+            self.ptt_tail_left = self.ptt_tail_left.saturating_sub(block);
+            true
+        } else {
+            false
+        };
+        self.params.set_ptt_open(open);
+        open
     }
 }
 
@@ -980,6 +1072,115 @@ mod tests {
         let out = feed(&mut chain, &cosine(4_800, 0.5));
         assert_eq!(out.len(), 4_800);
         assert!(out.iter().all(|&s| s == 0.0), "mic leaked at start");
+    }
+
+    // ---- push-to-talk ----
+
+    fn ptt_chain() -> (Arc<MicParams>, MicChain) {
+        let p = Arc::new(MicParams::new());
+        p.set_ptt_mode(true);
+        let chain = MicChain::new(p.clone());
+        (p, chain)
+    }
+
+    /// One 10 ms block of a loud tone through `chain`; true if it came out audible.
+    fn block_audible(chain: &mut MicChain) -> bool {
+        let mut out = Vec::new();
+        chain.process(&cosine(480, 0.5), &mut out);
+        out.iter().any(|&s| s.abs() > 0.01)
+    }
+
+    #[test]
+    fn ptt_mode_starts_closed() {
+        // A fresh chain in PTT mode is silent from the first sample, even
+        // though nothing ramped it down.
+        let (p, mut chain) = ptt_chain();
+        let out = feed(&mut chain, &cosine(4_800, 0.5));
+        assert!(out.iter().all(|&s| s == 0.0), "mic leaked at start");
+        assert!(!p.ptt_open());
+        // A restart is a new chain: closed again after being open.
+        p.set_ptt_held(true);
+        feed(&mut chain, &cosine(4_800, 0.5));
+        assert!(p.ptt_open());
+        p.set_ptt_held(false);
+        let mut chain = MicChain::new(p);
+        let out = feed(&mut chain, &cosine(4_800, 0.5));
+        assert!(out.iter().all(|&s| s == 0.0), "mic leaked after restart");
+    }
+
+    #[test]
+    fn ptt_opens_with_ramp_and_closes_after_tail() {
+        let (p, mut chain) = ptt_chain();
+        p.set_ptt_held(true);
+        let mut out = Vec::new();
+        chain.process(&cosine(480, 0.5), &mut out);
+        assert!(out[0].abs() < 0.05, "hard step on open: {}", out[0]);
+        assert!(block_audible(&mut chain));
+        assert!(p.ptt_open());
+        // Outside PTT mode the gate is not involved at all.
+        p.set_ptt_mode(false);
+        assert!(block_audible(&mut chain));
+    }
+
+    #[test]
+    fn ptt_release_tail_200ms() {
+        let (p, mut chain) = ptt_chain();
+        p.set_ptt_held(true);
+        for _ in 0..5 {
+            block_audible(&mut chain);
+        }
+        p.set_ptt_held(false);
+        // Count 10 ms blocks the mic stays audible after release.
+        let mut audible = 0;
+        while block_audible(&mut chain) {
+            audible += 1;
+            assert!(audible < 40, "never closed");
+        }
+        // 200 ms tail (to within a block) plus the 10 ms close ramp.
+        assert!((19..=22).contains(&audible), "tail was {audible} blocks");
+        assert!(!p.ptt_open());
+        // Closed stays closed.
+        assert!(!block_audible(&mut chain));
+        // Pressing again during a tail restarts it in full.
+        p.set_ptt_held(true);
+        assert!(block_audible(&mut chain) || block_audible(&mut chain));
+    }
+
+    #[test]
+    fn ptt_press_during_tail_restarts_tail() {
+        let (p, mut chain) = ptt_chain();
+        p.set_ptt_held(true);
+        block_audible(&mut chain);
+        p.set_ptt_held(false);
+        for _ in 0..15 {
+            assert!(block_audible(&mut chain));
+        }
+        p.set_ptt_held(true);
+        block_audible(&mut chain);
+        p.set_ptt_held(false);
+        for _ in 0..15 {
+            assert!(block_audible(&mut chain), "tail did not restart");
+        }
+    }
+
+    #[test]
+    fn mute_overrides_ptt() {
+        let (p, mut chain) = ptt_chain();
+        p.set_ptt_held(true);
+        for _ in 0..3 {
+            block_audible(&mut chain);
+        }
+        assert!(block_audible(&mut chain));
+        p.set_mic_muted(true);
+        // Ramp (one block), then silence even though the key is held.
+        block_audible(&mut chain);
+        for _ in 0..5 {
+            assert!(!block_audible(&mut chain), "held PTT beat the mute");
+        }
+        assert!(p.ptt_held());
+        p.set_mic_muted(false);
+        block_audible(&mut chain);
+        assert!(block_audible(&mut chain), "unmute while held reopens");
     }
 
     // ---- mic quality ----

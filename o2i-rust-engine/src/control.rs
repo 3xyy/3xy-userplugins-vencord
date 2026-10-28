@@ -82,6 +82,16 @@ pub fn apply_profile_dsp(params: &MicParams, p: &Profile) {
             .unwrap_or(100.0)
             .clamp(0.0, 100.0),
     );
+    // Mic mode (headless only), written the same way: `None` = "always".
+    params.set_ptt_mode(is_ptt_mode(p));
+}
+
+/// `profile.mic_mode` is `"ptt"` (case-insensitive). Missing, `null` and any
+/// other value mean `"always"`.
+pub fn is_ptt_mode(p: &Profile) -> bool {
+    p.mic_mode
+        .as_deref()
+        .is_some_and(|m| m.trim().eq_ignore_ascii_case("ptt"))
 }
 
 /// Attach each routed app (by name) to the running engine and restore its volume.
@@ -291,6 +301,24 @@ mod tests {
         assert!(!params.gate_auto());
         assert!((params.monitor_mic_volume() - 1.0).abs() < 1e-6);
         assert!((params.gate_auto_margin_db() - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_mic_mode_null_is_always() {
+        let params = dsp::MicParams::new();
+        let apply = |json: &str| {
+            let p: config::Profile = serde_json::from_str(json).unwrap();
+            apply_profile_dsp(&params, &p);
+            params.ptt_mode()
+        };
+        assert!(apply(r#"{"mic_mode":"ptt"}"#));
+        // null and missing both mean "always", applied explicitly (not "keep").
+        assert!(!apply(r#"{"mic_mode":null}"#));
+        assert!(apply(r#"{"mic_mode":"PTT"}"#));
+        assert!(!apply(r#"{"name":"x"}"#));
+        assert!(apply(r#"{"mic_mode":"ptt"}"#));
+        assert!(!apply(r#"{"mic_mode":"always"}"#));
+        assert!(!apply(r#"{"mic_mode":"toggle"}"#), "unknown = always");
     }
 
     #[test]

@@ -118,14 +118,15 @@ function muteSpecProblem(spec: string): string | null {
 /**
  * Why `accel` can't be a hotkey on that row, or null.
  * - Soundboard (from keyEventToAccel): a letter or digit needs Ctrl or Alt, since on its own or with only
- *   Shift it would fire while typing. F-keys are allowed with any modifiers. No mouse buttons.
+ *   Shift it would fire while typing. F-keys are allowed with any modifiers. Mouse3-5 are allowed bare or with modifiers; left and right click are not.
  * - Mute: any key the engine's input hook knows, bare or with Ctrl / Alt / Shift / Win, or Mouse3-5.
  */
 export function hotkeyProblem(accel: string, row: HotkeyRow = "soundboard"): string | null {
     if (row === "mute") return muteSpecProblem(accel);
+    const parsed = parseSpec(accel);
+    if (parsed && /^MOUSE/.test(parsed.key)) return muteSpecProblem(accel);
     const parts = accel.split("+");
     const key = parts[parts.length - 1];
-    if (/^mouse\d*$/i.test(key.trim())) return "Mouse buttons only work for the mute hotkey";
     if (/^F\d+$/.test(key)) return null;
     const mods = parts.slice(0, -1);
     if (mods.includes("Ctrl") || mods.includes("Alt")) return null;
@@ -158,14 +159,19 @@ function muteOverlaps(muteSpec: string, accel: string): boolean {
     return m.mods.length === 0 || (m.mods.length === a.mods.length && m.mods.every(x => a.mods.includes(x)));
 }
 
+/** Two bare-or-exact input keys (mute / push-to-talk) that would both fire on some press. */
+function eitherOverlaps(a: string, b: string): boolean {
+    return muteOverlaps(a, b) || muteOverlaps(b, a);
+}
+
 /**
- * Message if `accel` is already taken by another sound, the stop-all key or the mute key, or null.
+ * Message if `accel` is already taken by another sound, the stop-all key, the mute key or the push-to-talk key, or null.
  * Case-insensitive. `ownPath` is the sound being edited, or null when editing the stop-all key. Sounds are
  * named by their custom name or file name, never their folder. With `sources`, a sound outside them (its
  * folder was removed, which keeps its hotkey) is pointed out, since it no longer has a tile.
  */
 export function hotkeyConflict(
-    p: Pick<O2iProfile, "sb_stop_all_hotkey" | "sb_clip_hotkeys" | "mic_mute_hotkey"> | null | undefined,
+    p: Pick<O2iProfile, "sb_stop_all_hotkey" | "sb_clip_hotkeys" | "mic_mute_hotkey" | "ptt_key"> | null | undefined,
     meta: SoundMetaMap | null | undefined,
     accel: string,
     ownPath: string | null,
@@ -174,6 +180,7 @@ export function hotkeyConflict(
     const a = accel.toLowerCase();
     if (ownPath !== null && p?.sb_stop_all_hotkey?.toLowerCase() === a) return "Already used by Stop all sounds";
     if (p?.mic_mute_hotkey && muteOverlaps(p.mic_mute_hotkey, accel)) return "Already used by the mute hotkey";
+    if (p?.ptt_key && muteOverlaps(p.ptt_key, accel)) return "Already used by the push-to-talk key";
     const own = ownPath === null ? null : pathKey(ownPath); // its own key in any spelling isn't a conflict
     for (const [path, key] of p?.sb_clip_hotkeys ?? []) {
         if (key.toLowerCase() !== a || pathKey(path) === own) continue;
@@ -184,11 +191,15 @@ export function hotkeyConflict(
 
 /** Message if the mute key `spec` would also fire on the stop-all key or a sound's key, or null. */
 export function muteHotkeyConflict(
-    p: Pick<O2iProfile, "sb_stop_all_hotkey" | "sb_clip_hotkeys"> | null | undefined,
+    p: Pick<O2iProfile, "sb_stop_all_hotkey" | "sb_clip_hotkeys" | "mic_mute_hotkey" | "ptt_key"> | null | undefined,
     meta: SoundMetaMap | null | undefined,
     spec: string,
-    sources?: readonly string[]
+    sources?: readonly string[],
+    /** Which row `spec` is on, so the other one is checked too (both ways: either key bare fires on the other). */
+    self?: "mute" | "ptt"
 ): string | null {
+    if (self === "mute" && p?.ptt_key && eitherOverlaps(spec, p.ptt_key)) return "Already used by the push-to-talk key";
+    if (self === "ptt" && p?.mic_mute_hotkey && eitherOverlaps(spec, p.mic_mute_hotkey)) return "Already used by the mute hotkey";
     if (p?.sb_stop_all_hotkey && muteOverlaps(spec, p.sb_stop_all_hotkey)) return "Already used by Stop all sounds";
     for (const [path, key] of p?.sb_clip_hotkeys ?? []) {
         if (muteOverlaps(spec, key)) return `Already bound to ${clipName(path, meta, sources)}`;

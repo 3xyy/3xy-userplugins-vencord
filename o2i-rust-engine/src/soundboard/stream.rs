@@ -226,6 +226,22 @@ impl ClipStream {
         self.shared.stop.store(true, Ordering::Relaxed);
     }
 
+    /// A ready-made clip: `samples` (interleaved 48 kHz stereo) already fully
+    /// buffered with eof set, no decoder thread (TTS output). Build it off the
+    /// mixing thread; the ring is sized to the buffer. Not seekable: a seek
+    /// request is dropped (see `poll_seek`).
+    pub fn from_buffer(samples: Vec<f32>) -> ClipStream {
+        let (mut prod, cons) = HeapRb::<f32>::new(samples.len().max(2)).split();
+        prod.push_slice(&samples);
+        let shared = Arc::new(Shared::new());
+        shared
+            .total_frames
+            .store((samples.len() / CHANNELS as usize) as u64, Ordering::Release);
+        shared.worker_gone.store(true, Ordering::Release);
+        shared.eof.store(true, Ordering::Release);
+        Self::with_parts(cons, shared)
+    }
+
     /// Samples currently buffered in the ring.
     #[cfg(test)]
     pub fn buffered(&self) -> usize {

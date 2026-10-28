@@ -23,9 +23,9 @@ const cl = classNameFactory("vc-o2i-");
 
 const FORMATS = "MP3, WAV, OGG, FLAC, M4A or AAC";
 
-function toast(text: string) {
+function toast(text: string, variant?: "critical") {
     try {
-        showToast({ text });
+        showToast({ text, variant });
     } catch (e) {
         olog.error("toast failed", e);
     }
@@ -48,6 +48,24 @@ async function addFolder(): Promise<void> {
     if (!addSourceFolder(picked)) toast("That folder is already in your soundboard");
 }
 
+/** Opens a folder in File Explorer; a problem shows as a toast. */
+async function openFolder(folder: string): Promise<void> {
+    if (!IS_DISCORD_DESKTOP) return;
+    try {
+        const native = getNative();
+        // native.ts from before this existed never defines it: needs a Discord restart.
+        if (typeof native.openFolder !== "function") {
+            toast("Restart Discord to finish updating o2i", "critical");
+            return;
+        }
+        const res = await native.openFolder(folder);
+        if (!res.ok) toast(res.error, "critical");
+    } catch (e) {
+        olog.error("open folder failed", e);
+        toast("Couldn't open the folder", "critical");
+    }
+}
+
 /** Removes a folder from the list; its sounds' settings, hotkeys and names stay (they show again if it's re-added). */
 function removeFolder(folder: string) {
     const next = removeSource(sourcesOf(settings.store.profile), folder);
@@ -65,7 +83,15 @@ function FolderRows({ folders, compact }: { folders: string[]; compact: boolean;
                         {/* The parent shrinks first, so the folder's own name stays readable. */}
                         <span className={cl("folder-path")}>
                             {parent && <span className={cl("folder-parent")}>{parent}</span>}
-                            <span className={cl("folder-name")}>{name}</span>
+                            <button
+                                type="button"
+                                className={cl("folder-name", "folder-open")}
+                                title="Open in File Explorer"
+                                aria-label={`Open ${f} in File Explorer`}
+                                onClick={() => void openFolder(f)}
+                            >
+                                {name}
+                            </button>
                         </span>
                         <button
                             type="button"

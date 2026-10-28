@@ -1,130 +1,138 @@
 # Output2Input (o2i)
 
-Output2Input puts more than your mic into your Discord mic. It mixes three things into one virtual mic:
+Output2Input mixes a processed microphone, the audio of selected apps, a soundboard and text to speech into one virtual microphone for Discord. The audio runs in `o2i.exe`, a separate engine that the plugin controls from a button next to Discord's mute and deafen buttons.
 
-- your real mic, cleaned up (noise removal, a noise gate, auto gain, and optional voice effects)
-- the sound of apps you pick, like a music player or a game
-- a soundboard made from your own audio files
+Vencord's plugin list shows it as **Output2Input**. The button and panel use **o2i**.
 
-The mixing is done by a small audio engine, `o2i.exe`, which runs in the background while Discord is open. The plugin starts and stops it and gives you a panel to control it, right next to Discord's mute and deafen buttons.
+## Features
 
-In Vencord's plugin list it's called **Output2Input**. Everywhere else (the button, the panel, toasts) it just says o2i. The folder is `o2i`.
+- Mic processing: noise cleanup (RNNoise), a noise gate with an automatic mode, auto gain, voice effects and a Quality slider that degrades the mic on purpose.
+- Mic mute and push to talk, with keys that work while a game has focus.
+- Per-app audio routing with volume, mute and ducking while speaking.
+- A soundboard built from local folders, with per-sound hotkeys and volumes.
+- Text to speech into the call, with Windows voices or downloadable natural voices.
+- Automatic fallback to the real microphone if the engine stops during a call.
+- Log export for bug reports, with the Windows user name redacted.
 
-Windows only, and only in the Discord desktop app (not the browser or Vesktop).
+## Screenshots
+
+![The o2i button next to Discord's mute and deafen buttons](../assets/o2i/button.png)
+
+| Mic | Soundboard | Apps |
+|---|---|---|
+| ![The o2i panel, Mic tab](../assets/o2i/panel-mic.png) | ![The o2i panel, Soundboard tab with Text to speech](../assets/o2i/panel-soundboard.png) | ![The o2i panel, Apps tab](../assets/o2i/panel-apps.png) |
 
 ## How it works
 
 ```
-real mic + apps + soundboard  ->  o2i.exe  ->  CABLE Input  ->  CABLE Output  ->  Discord
+real mic + apps + soundboard + speech  ->  o2i.exe  ->  CABLE Input  ->  CABLE Output  ->  Discord
 ```
 
-VB-CABLE is a virtual cable: whatever plays into **CABLE Input** comes out of **CABLE Output** as if it were a microphone. o2i plays its mix into CABLE Input, and Discord uses CABLE Output as your mic. Apps you route still play on your speakers as normal; o2i takes a copy.
+VB-CABLE passes audio played into **CABLE Input** out of **CABLE Output** as a microphone. Routed apps keep playing on the speakers. Audio runs only during a call or while the panel is open, unless **Keep Running Outside Calls** is on.
 
-The engine only runs audio while you're in a call or have the o2i panel open, unless you turn on **Keep Running Outside Calls**.
+## Usage
 
-## Setup
+### Setup
 
-1. **Install [VB-CABLE](https://vb-audio.com/Cable).** It's free. Unzip it, run the setup as administrator, click Install Driver, and restart your PC if it asks.
-2. **Get `o2i.exe`.** Download it from the [latest release](https://github.com/3xyy/userplugins-vencord/releases/latest) and put it somewhere it can stay, for example `C:\Tools\o2i\o2i.exe`. You can also build it yourself, see [o2i-rust-engine](../o2i-rust-engine).
-3. **Turn on Output2Input** in Settings > Vencord > Plugins and open its settings.
-4. **Paste the full path to `o2i.exe`** into **Engine path**. It says "Found" when the file is there, and the engine starts.
-5. **Pick your devices.** **Microphone** is your real mic. **o2i output** should be `CABLE Input (VB-Audio Virtual Cable)`, which is the default when VB-CABLE is installed. **Headphones** is where you hear soundboard sounds and yourself.
-6. **Point Discord at o2i.** Click the o2i button in the account panel (bottom left). If Discord isn't using o2i's mic yet, the panel shows a **Fix** button. It sets Discord's input device to CABLE Output and turns off Discord's own noise suppression, Krisp noise cancellation, echo cancellation and auto gain, since o2i does that part now.
+1. Install [VB-CABLE](https://vb-audio.com/Cable): unzip it, run the setup as administrator, click **Install Driver** and restart if prompted.
+2. Download `o2i.exe` from the [latest release](https://github.com/3xyy/3xy-userplugins-vencord/releases/latest) into a permanent folder, for example `C:\Tools\o2i\o2i.exe`. To build it instead, see [o2i-rust-engine](../o2i-rust-engine).
+3. Enable **Output2Input** in **Settings > Vencord > Plugins** and open its settings.
+4. Paste the full path into **Engine path (o2i.exe)**. The field shows **Found** and the engine starts.
+5. Select **Microphone** (the real mic), **o2i output** (`CABLE Input (VB-Audio Virtual Cable)`, the default) and **Headphones (hear sounds locally)**.
+6. Click the o2i button in the account panel. If the panel shows **Fix**, click it. It sets Discord's input to CABLE Output and turns off Discord's noise suppression, Krisp, echo cancellation and automatic gain control.
 
-That's it. Join a call and talk; the level meter in the Mic tab shows what o2i hears.
+### Panel
 
-## The panel
+The header shows the engine status and four buttons: mute, power, export logs and expand. The o2i button shows a red slash while the mic is muted, and a plain slash while push to talk keeps it closed.
 
-Click the o2i button in the account panel to open it. The arrows in the corner open a bigger version.
+**Mic tab**
 
-The top row shows whether o2i is running, plus four buttons: mute, power, export logs and expand. While your mic is muted, the o2i button in the account panel gets a small slash through it.
+| Control | Function |
+|---|---|
+| Mute mic, Mute hotkey | Mutes the real mic only. Apps and sounds keep playing. |
+| Mic mode, Push to talk key | **Always on**, or open only while the key is held. See [Push to talk](#push-to-talk). |
+| Voice, Intensity | Off, Deeper or Higher. |
+| Quality | Degrades the mic on purpose. 100 is the unmodified mic. |
+| Noise cleanup, Amount | Removes background noise. |
+| Noise gate, Auto | Mutes the mic below the white line on the level meter. Drag the line, or press **Auto** to follow the background noise. |
+| Auto gain | Keeps the voice at a steady loudness. |
+| Hear yourself | Plays the processed mic on the headphones, slightly delayed. |
+| Mic volume, Master | 0 to 200%. Master covers the mic, apps and sounds. |
 
-### Mic tab
+**Apps tab**
 
-- **Mute mic** mutes only your real mic. Routed apps and soundboard sounds keep playing. Each toggle plays Discord's own mute or unmute sound, and the mute is remembered when you restart Discord.
-- **Mute hotkey**: click the box, then press any key, a key combo, or the middle or side mouse buttons (Mouse3 to Mouse5). It works while a game has focus, and the key still reaches the game. A few things to know:
-  - It doesn't fire while an app running as administrator has focus. Windows doesn't pass those keys to normal apps.
-  - A plain letter or number key also toggles mute while you type.
-  - Side mouse buttons may also go back or forward in Discord.
-- **Voice**: Off, Deeper or Higher, with an **Intensity** slider.
-- **Quality**: 100 is your normal mic. Lower it to make your mic sound worse on purpose. Around 75 sounds a bit muffled, 50 like a cheap headset, 25 like a bad phone call, and near 0 is barely understandable. It changes live while you drag.
-- **Noise cleanup** removes background noise (RNNoise). **Amount** sets how much.
-- **Noise gate** cuts your mic while it's quieter than the white line on the level meter. Drag the line to set it, or press **Auto** and the gate follows your background noise by itself.
-- **Auto gain** keeps your voice at a steady loudness.
-- **Hear yourself** plays your processed mic on your headphones, with a slight delay. Use headphones, or your mic picks it up. It has its own volume slider.
-- **Mic volume** and **Master** (mic, apps and sounds together), from 0 to 200%.
+- **Add app** mixes a running app into the mic. Each app has a volume, **Mute** and remove. A green dot means it is being captured.
+- **Lower apps while you talk** lowers routed apps to **Ducked volume** while speaking.
 
-### Apps tab
+**Soundboard tab**
 
-- **Add app** lists the apps that are running, with the ones playing sound first. Pick one and its audio is mixed into your mic.
-- Each app has a volume slider (0 to 200%), a **Mute** button and a remove button. The dot is green while o2i is capturing that app. An app that isn't running yet gets picked up once it starts.
-- **Lower apps while you talk** turns routed apps down to **Ducked volume** while you're speaking.
+- Click a sound to play it. **Edit** sets its emoji, name, hotkey, **Others hear**, **You hear** and **Hear locally**.
+- **Override all sounds**, under **All sounds**, applies one set of levels to every sound.
+- **Now playing** has seek, pause, stop and volume per sound, plus **Stop all sounds** and a **Stop-all hotkey**.
+- **Add folder** adds a folder. o2i lists its MP3, WAV, OGG, FLAC, M4A and AAC files, without subfolders.
+- Sound hotkeys are F1 to F12, or a letter or digit with Ctrl or Alt (Shift optional). Unlike the mute and push to talk keys, they do not reach the focused app.
+- On first start, o2i copies two sounds to `%APPDATA%\o2i\sounds` and adds that folder once.
 
-### Soundboard tab
+### Push to talk
 
-- **Folders** sit at the top (they're on the settings page too). **Add folder** picks a folder, and o2i shows the MP3, WAV, OGG, FLAC, M4A and AAC files directly inside it. Subfolders aren't included. Removing a folder keeps its sounds' settings, in case you add it back.
-- o2i comes with a default folder holding two sounds. On first start it copies them to `%APPDATA%\o2i\sounds` and adds that folder once. If you remove it, it stays removed, and the files in it are never overwritten.
-- Click a sound to play it. **Show sounds from** picks which folders to show, and there's a search box.
-- **Edit** on a sound sets its emoji, name and hotkey, how loud others hear it, how loud you hear it, and **Hear locally** (also play it on your headphones). Volume changes apply right away, even to a sound that's already playing.
-- **Override all sounds** (under All sounds) uses one set of levels for every sound instead of each sound's own.
-- **Now playing** lists what's playing. Each sound has a seek bar (drag it, or use the arrow keys, Home and End), Pause and Resume, Stop, and Volume. **Stop all sounds** stops everything, and there's a **Stop-all hotkey** too.
-- Sound hotkeys are F1 to F12, or a letter or digit with Ctrl or Alt (Shift is optional). Unlike the mute hotkey, o2i keeps these keys, so the focused app doesn't get them.
+- The mic opens while the key is held and closes 200 ms after release.
+- The key can be any key, a key combination or Mouse3 to Mouse5. Like the mute key, it still reaches the focused app.
+- Mute overrides push to talk. With no key set, the mic stays closed.
+- Keep Discord's own push to talk off.
 
-### Power button
+### Text to speech
 
-Turns o2i off completely. The engine, its hotkeys and the soundboard stop, and Discord goes back to your real mic. Turning it on starts the engine again, and Discord switches back to CABLE Output once audio is running. Off stays off after a restart.
+1. In the Soundboard tab, click **Show** next to **Text to speech**.
+2. Choose a voice. **Windows voices** work without setup. **Natural voices** (Piper) show **Install** with the download size.
+3. Type up to 1000 characters, set **Speed** (0.5x to 2x) and press Enter or **Speak**.
 
-### Export logs
+- Speech plays into the call through the soundboard, at the **All sounds** levels, and appears in **Now playing**.
+- A natural voice is about 60 MB. The first one also downloads the 22 MB Piper runtime. Downloads come over HTTPS from the official rhasspy repositories, are checked against pinned SHA-256 hashes and work offline afterwards.
+- Six English voices are available. Each has its own dataset license. Voices are downloaded by the user, not bundled with o2i.
 
-Saves a zip to your Downloads folder (`o2i-logs-<date>-<time>.zip`) that you can attach to a bug report. It holds the engine and plugin logs plus a `summary.json` with versions, your o2i settings, your audio devices, Discord's voice settings, and your soundboard folder and file names.
+## Settings
 
-Before zipping, your Windows user folder is replaced with `%USERPROFILE%`, and your Windows user name with `<user>` wherever it shows up as a whole word. Audio device names and the names of the apps you route are left as they are. Nothing from other plugins goes in.
-
-## If o2i stops
-
-If the engine crashes or stops sending audio during a call, Discord switches to your real mic so you don't go silent, and a toast tells you. When o2i is healthy again, Discord goes back to CABLE Output. The engine restarts by itself after a crash.
-
-If your o2i mic was muted when that happens, Discord self-mutes before it switches, so you're never live by surprise. Your previous Discord mute comes back once o2i recovers.
-
-The fallback only switches to the mic picked in o2i's **Microphone** setting, never to Discord's "Default" (which could be CABLE Output). If it can't find that mic, a toast asks you to pick your mic in Discord's Voice settings.
-
-Turning the plugin off stops the engine and puts Discord's voice settings back the way they were before you clicked Fix.
-
-## Settings page
-
-| Setting | What it does |
-|---------|--------------|
-| Keep Running Outside Calls | Keeps o2i's audio running when you're not in a call, for example to use VB-CABLE in other apps. Off by default |
-| Power | Same as the power button in the panel |
-| Engine path | Full path to `o2i.exe` |
-| Microphone | Your real mic. o2i needs a named device here, and so does the fallback |
-| o2i output | Where o2i plays its mix. Use CABLE Input |
-| Headphones (hear sounds locally) | Where soundboard sounds (with Hear locally on) and Hear yourself play |
-| Soundboard folders | Same list as in the Soundboard tab |
-| Re-import from the o2i app | Copies the settings saved by o2i's standalone window (see the engine README) |
-| Export logs | Same as the button in the panel |
+| Setting | Default | Description |
+|---|---|---|
+| Keep Running Outside Calls | Off | Keeps audio running outside calls, for example to use VB-CABLE in other apps. |
+| Power (Turn off, Turn on) | On | Off stops the engine, its hotkeys and the soundboard, and Discord returns to the real mic. Kept across restarts. |
+| Engine path (o2i.exe) | Empty | Full path to `o2i.exe`. |
+| Microphone | None | The real mic. A named device is required, also for the fallback. |
+| o2i output | CABLE Input | Where o2i plays its mix. |
+| Headphones (hear sounds locally) | System default | Output for **Hear locally** sounds and **Hear yourself**. |
+| Soundboard folders | Default sounds folder | Same list as in the Soundboard tab. |
+| Re-import from the o2i app | Button | Copies the settings saved by o2i's standalone window. |
+| Export logs | Button | Same as the panel's export logs button. |
 
 ## Requirements
 
-- Windows 11. Windows 10 isn't tested, and capturing a single app's audio needs a recent Windows build. It also needs the Discord desktop app with Vencord built from source.
+- Windows 11. Windows 10 is untested, and per-app capture needs a recent Windows build.
+- The Discord desktop app with Vencord built from source. The browser and Vesktop are not supported.
 - [VB-CABLE](https://vb-audio.com/Cable).
-- `o2i.exe` from the [releases](https://github.com/3xyy/userplugins-vencord/releases/latest), or built from [o2i-rust-engine](../o2i-rust-engine).
+- `o2i.exe` from the [latest release](https://github.com/3xyy/3xy-userplugins-vencord/releases/latest), or built from [o2i-rust-engine](../o2i-rust-engine). New plugin features can require a newer engine.
 
-## Known limits
+## Notes
 
-- Only one o2i can run audio at a time. If o2i's standalone window is running audio, the plugin's engine can't, and the other way round.
-- The mute hotkey doesn't fire while an app running as administrator has focus.
-- Sound hotkeys are limited to F1 to F12 and Ctrl or Alt with a letter or digit. Win key combos aren't supported.
-- Soundboard folders aren't searched into subfolders.
-- The account panel button and the Fix button depend on Discord's UI, so a Discord update can break them until the plugin catches up.
+### Fallback
 
-## Privacy
+- If the engine stops during a call, Discord switches to the mic selected in **Microphone** and returns to CABLE Output when o2i recovers. If that mic is missing, a message asks to choose one in Discord's Voice settings. The engine restarts by itself after a crash.
+- If o2i was muted or on push to talk, Discord switches to the real mic muted. The previous Discord mute returns on recovery.
+- Disabling the plugin stops the engine and restores the Discord voice settings that **Fix** changed.
 
-- o2i doesn't send anything anywhere. The engine has no network code, and the only web page the plugin opens is the download page, when you click the link.
-- Logs live in `%APPDATA%\o2i\logs` (`engine.log` and `plugin.log`, each rotated at 5 MB). They include device names, app names and sound file paths. Export logs cleans up your user folder and name as described above, but have a look before you post a zip publicly.
-- The default sounds go to `%APPDATA%\o2i\sounds`. Only the standalone window writes `%APPDATA%\o2i\config.toml`.
-- Your o2i settings are saved with Vencord's other plugin settings, so they're included if you use Vencord's Settings Sync.
+### Limitations
+
+- Only one o2i can run audio at a time: the plugin's engine or the standalone window.
+- The mute and push to talk keys do not work while an elevated (administrator) window has focus.
+- A bare letter or digit as the mute key also toggles while typing. Side mouse buttons may also navigate back or forward in Discord.
+- The account panel button and **Fix** depend on Discord's UI and can break after a Discord update.
+
+### Privacy
+
+- The only network access is the natural voice download, started with **Install**.
+- Logs are in `%APPDATA%\o2i\logs` (`engine.log`, `plugin.log`, rotated at 5 MB) and include device names, app names and sound file paths.
+- **Export logs** saves a zip to Downloads with both logs and a `summary.json` (versions, o2i settings, audio devices, Discord voice settings, soundboard file names). The Windows user folder becomes `%USERPROFILE%` and the user name `<user>`. Device and app names are kept. Review the zip before posting it publicly.
+- o2i settings are included in Vencord Settings Sync.
 
 ## Author
 
-Made by 3xyy ([Discord](https://discord.com/users/596844241058267168)). GPL-3.0-or-later.
+3xyy ([Discord](https://discord.com/users/596844241058267168)). GPL-3.0-or-later.

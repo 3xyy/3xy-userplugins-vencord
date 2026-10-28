@@ -7,9 +7,10 @@
 import { definePluginSettings } from "@api/Settings";
 import { OptionType } from "@utils/types";
 
+import { followPttMode } from "./discordVoice";
 import { engineClient, getNative } from "./engineClient";
 import { olog } from "./log";
-import type { O2iProfile } from "./logic/profile";
+import { isPttMode, type O2iProfile } from "./logic/profile";
 import { type SoundMeta, type SoundMetaMap, withSoundMeta } from "./logic/soundMeta";
 import { addSource, planPathsMigration, shouldAddDefaultFolder, sourcesOf, withSources } from "./logic/sources";
 import type { DiscordVoiceSnapshot, RealMicInfo } from "./types";
@@ -105,13 +106,25 @@ export const settings = definePluginSettings({
         type: OptionType.CUSTOM,
         default: null as boolean | null,
     },
+    /** Text to speech: the last voice used (an engine voice id) and its speed (0.5 to 2). */
+    ttsVoice: {
+        type: OptionType.CUSTOM,
+        default: null as string | null,
+    },
+    ttsRate: {
+        type: OptionType.CUSTOM,
+        default: 1,
+    },
 });
 
 /** Updates the stored profile (fn gets a plain copy) and pushes it to the engine (debounced). */
 export function updateProfile(fn: (p: O2iProfile) => O2iProfile): void {
     const current: O2iProfile = JSON.parse(JSON.stringify(settings.store.profile ?? { name: "default" }));
+    const wasPtt = isPttMode(current);
     settings.store.profile = fn(current);
     engineClient.configureSoon();
+    const ptt = isPttMode(settings.store.profile);
+    if (ptt !== wasPtt) followPttMode(ptt);
 }
 
 /** Sets or clears one sound's display name / emoji (by its path); writes the setting only when something changed. */

@@ -262,7 +262,8 @@
  */
 .vc-o2i-content,
 .vc-o2i-picker-list,
-.vc-o2i-clip-grid {
+.vc-o2i-clip-grid,
+.vc-o2i-textarea {
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thin-thumb, var(--interactive-muted, #4e5058)) transparent;
 }
@@ -1078,6 +1079,29 @@
     font-weight: 500;
 }
 
+/* The name is a button that opens the folder: looks like the text, underlined on hover. */
+.vc-o2i-folder-open {
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+}
+
+.vc-o2i-folder-open:hover {
+    color: var(--text-link, var(--brand-500, #5865f2));
+    text-decoration: underline;
+}
+
+.vc-o2i-folder-open:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+    outline-offset: 1px;
+    border-radius: 2px;
+}
+
 /* ---- expanded panel (modal) ---- */
 
 /* Fixed height (never resizes with the tab); Discord's modal title row sits above it. */
@@ -1191,4 +1215,155 @@
 
 .vc-o2i-meter-threshold-dim {
     opacity: 0.5;
+}
+
+/* ---- text to speech ---- */
+
+.vc-o2i-tts-box {
+    position: relative;
+    display: flex;
+}
+
+.vc-o2i-textarea {
+    flex: 1;
+    min-width: 0;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 6px 10px 20px;
+    border: 1px solid var(--input-border-default, var(--border-subtle, rgb(78 80 88 / 48%)));
+    border-radius: 8px;
+    background: var(--input-background-default, var(--input-background, var(--background-tertiary, #1e1f22)));
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 18px;
+    outline: none;
+    resize: vertical;
+    transition: border-color 0.1s ease, box-shadow 0.1s ease;
+}
+
+.vc-o2i-textarea::placeholder {
+    color: var(--input-placeholder-text-default, var(--text-muted, #949ba4));
+    opacity: 1;
+}
+
+.vc-o2i-textarea:focus {
+    border-color: var(--brand-500, var(--brand-experiment, #5865f2));
+    box-shadow: 0 0 0 1px var(--brand-500, var(--brand-experiment, #5865f2));
+}
+
+.vc-o2i-tts-count {
+    position: absolute;
+    right: 10px;
+    bottom: 4px;
+    font-size: 11px;
+    line-height: 14px;
+    color: var(--text-muted, #949ba4);
+    pointer-events: none;
+}
+
+.vc-o2i-tts-count-full {
+    color: var(--status-danger, #da373c);
+}
+
+.vc-o2i-tts-voices {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vc-o2i-tts-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.vc-o2i-tts-group-title {
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+    text-transform: uppercase;
+    color: var(--text-muted, #949ba4);
+}
+
+.vc-o2i-tts-voice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 28px;
+    padding-right: 4px;
+    border-radius: 4px;
+}
+
+.vc-o2i-tts-voice:hover {
+    background: var(--background-modifier-hover, rgb(78 80 88 / 30%));
+}
+
+.vc-o2i-tts-voice-selected,
+.vc-o2i-tts-voice-selected:hover {
+    background: var(--background-modifier-selected, rgb(78 80 88 / 60%));
+}
+
+.vc-o2i-tts-voice-pick,
+.vc-o2i-tts-voice-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    padding: 4px 8px;
+    border: none;
+    background: none;
+    color: var(--text-default, var(--text-normal, #dbdee1));
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 20px;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-o2i-tts-voice-pick {
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.vc-o2i-tts-voice-pick:focus-visible {
+    outline: 2px solid var(--focus-primary, var(--brand-500, #5865f2));
+    outline-offset: -2px;
+}
+
+.vc-o2i-tts-voice-name {
+    color: var(--text-muted, #949ba4);
+}
+
+.vc-o2i-mini-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.vc-o2i-tts-progress {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 6px;
+}
+
+.vc-o2i-tts-bar {
+    width: 64px;
+}
+
+.vc-o2i-tts-fill {
+    display: block;
+}
+
+.vc-o2i-tts-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.vc-o2i-tts-error {
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--status-danger, #da373c);
 }

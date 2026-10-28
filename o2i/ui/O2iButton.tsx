@@ -10,9 +10,11 @@ import { filters, find, findComponentByCodeLazy } from "@webpack";
 import { Popout, Slider, TabBar, useEffect, useRef, useState } from "@webpack/common";
 import type { ComponentType, RefObject } from "react";
 
-import { engineClient, useMicMuted, usePluginRunning } from "../engineClient";
+import { engineClient, useMicMuted, useMicOpen, usePluginRunning } from "../engineClient";
 import { olog } from "../log";
+import { isPttMode } from "../logic/profile";
 import { usePowered } from "../power";
+import { settings } from "../settings";
 import type { EngineSnapshot } from "../types";
 import { Panel } from "./Panel";
 import { openPanelModal, registerPopoutOpener } from "./PanelModal";
@@ -47,7 +49,7 @@ const MUTE_SLASH = "M3 2.5 21.5 21";
 let maskSeq = 0;
 
 /** A microphone with a sound wave; `muted` adds a red slash. */
-function O2iSvg({ width = 20, height = 20, fill, opacity, muted }: IconProps & { fill: string; opacity?: number; muted?: boolean; }) {
+function O2iSvg({ width = 20, height = 20, fill, opacity, muted, closed }: IconProps & { fill: string; opacity?: number; muted?: boolean; closed?: boolean; }) {
     const [maskId] = useState(() => `vc-o2i-mute-mask-${++maskSeq}`);
     return (
         <svg width={width} height={height} viewBox="0 0 24 24" opacity={opacity} aria-hidden="true">
@@ -62,7 +64,7 @@ function O2iSvg({ width = 20, height = 20, fill, opacity, muted }: IconProps & {
                 <path fill={fill} d="M4 10a1 1 0 0 0-2 0 7 7 0 0 0 6 6.93V19H6a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.07A7 7 0 0 0 16 10a1 1 0 1 0-2 0 5 5 0 0 1-10 0Z" />
                 <path fill={fill} d="M19.5 6.2a1 1 0 0 1 1.4.1 7 7 0 0 1 0 8.4 1 1 0 1 1-1.5-1.3 5 5 0 0 0 0-5.8 1 1 0 0 1 .1-1.4Z" />
             </g>
-            {muted && <path d={MUTE_SLASH} stroke="var(--status-danger, #da373c)" strokeWidth="2.2" strokeLinecap="round" />}
+            {muted && <path d={MUTE_SLASH} stroke={closed ? "currentColor" : "var(--status-danger, #da373c)"} strokeWidth="2.2" strokeLinecap="round" />}
         </svg>
     );
 }
@@ -74,6 +76,8 @@ const DownIcon = (p: IconProps) => <O2iSvg {...p} fill="var(--status-danger, #da
 const OffIcon = (p: IconProps) => <O2iSvg {...p} fill="currentColor" opacity={0.4} />;
 /** o2i's mic is muted (apps and sounds still play). */
 const MutedIcon = (p: IconProps) => <O2iSvg {...p} fill="currentColor" muted />;
+/** Push to talk with the key not held: the mic is closed. */
+const ClosedIcon = (p: IconProps) => <O2iSvg {...p} fill="currentColor" muted closed />;
 const DownMutedIcon = (p: IconProps) => <O2iSvg {...p} fill="var(--status-danger, #da373c)" muted />;
 
 /** Engine not running, or running with its audio in error (audio "off" outside a call is normal). */
@@ -110,6 +114,10 @@ function O2iButtonBody({ nameplate }: { nameplate?: unknown; }) {
     const powered = usePowered();
     // Only while on: turned off, o2i's mic isn't in use (the mute is kept for the next power on).
     const muted = useMicMuted() && powered;
+    // Push to talk: open / closed. In "always" mode the button looks as it always has.
+    const ptt = isPttMode(settings.use(["profile"]).profile) && powered;
+    const micOpen = useMicOpen();
+    const closed = micOpen === false && ptt && !muted;
 
     useEffect(() => {
         noteButtonRendered();
@@ -138,9 +146,9 @@ function O2iButtonBody({ nameplate }: { nameplate?: unknown; }) {
             {(_, { isShown }) => (
                 <AccountPanelButton
                     ref={buttonRef}
-                    tooltipText={!powered ? "o2i (off)" : muted ? "o2i (mic muted)" : "o2i"}
+                    tooltipText={!powered ? "o2i (off)" : muted ? "o2i (mic muted)" : ptt ? (micOpen === null || unhealthy ? "o2i (push to talk)" : closed ? "o2i (push to talk, mic closed)" : "o2i (push to talk, mic open)") : "o2i"}
                     tooltipShouldShow={!isShown}
-                    icon={!powered ? OffIcon : unhealthy ? (muted ? DownMutedIcon : DownIcon) : muted ? MutedIcon : HealthyIcon}
+                    icon={!powered ? OffIcon : unhealthy ? (muted ? DownMutedIcon : DownIcon) : muted ? MutedIcon : closed ? ClosedIcon : HealthyIcon}
                     plated={nameplate != null}
                     onClick={() => setShow(v => !v)}
                 />

@@ -15,11 +15,13 @@ import type { ClipSettings, O2iProfile } from "../logic/profile";
 import { posFromX, seekPending, stepSeek } from "../logic/seek";
 import { matchesSound, nextEmoji, soundLabel, type SoundMeta, soundName } from "../logic/soundMeta";
 import { clipsStale, DEFAULT_CLIP, duplicateSourceTags, findClip, keyIndex, pathKey, sourceLabels, sourcesOf, withClipHotkey, withClipSettings } from "../logic/sources";
+import { isSpeech } from "../logic/tts";
 import { settings, updateProfile, updateSoundMeta } from "../settings";
 import type { EngineSnapshot, PlayingJson } from "../types";
 import { Field, pct, Section, SwitchRow, TextField, ValueSlider } from "./controls";
 import { FoldersSection } from "./FoldersSection";
 import { HotkeyInput } from "./HotkeyInput";
+import { TtsSection } from "./TtsSection";
 import { useEngineValue } from "./useEngineValue";
 
 const cl = classNameFactory("vc-o2i-");
@@ -243,7 +245,7 @@ function NowPlayingRow({ item, label, onVolume }: { item: PlayingJson; label: st
                     Stop
                 </button>
             </div>
-            {len != null ? (
+            {len != null && !isSpeech(item) ? (
                 <div
                     key="seek"
                     className={cl("np-seek")}
@@ -265,6 +267,11 @@ function NowPlayingRow({ item, label, onVolume }: { item: PlayingJson; label: st
                     <div className={cl("np-bar")}>
                         <div className={cl("np-fill")} style={{ width: `${frac * 100}%` }} />
                     </div>
+                </div>
+            ) : len != null ? (
+                // Speech: shows progress, can't be seeked.
+                <div key="speech" className={cl("np-bar")}>
+                    <div className={cl("np-fill")} style={{ width: `${frac * 100}%` }} />
                 </div>
             ) : (
                 <div key="plain" className={cl("np-bar")}>
@@ -671,6 +678,7 @@ export function ClipsTab() {
         return (
             <div className={cl("tab", "tab-sounds")}>
                 <FoldersSection compact />
+                <TtsSection />
             </div>
         );
     }
@@ -689,6 +697,7 @@ export function ClipsTab() {
         <div className={cl("tab", "tab-sounds")}>
             {/* At the top: collapsed once there is a folder, so the sounds stay where they were. */}
             <FoldersSection compact />
+            <TtsSection />
             <Section
                 title={`Sounds${clips ? ` (${filtered.length})` : ""}`}
                 action={

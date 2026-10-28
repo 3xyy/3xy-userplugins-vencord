@@ -25,7 +25,7 @@ const cl = classNameFactory("vc-o2i-");
 const VALIDATE_DEBOUNCE_MS = 400;
 const DEFAULT_VALUE = "";
 /** The ready-made o2i.exe: the latest GitHub release of the plugins' repo. */
-const ENGINE_DOWNLOAD_URL = "https://github.com/3xyy/userplugins-vencord/releases/latest";
+const ENGINE_DOWNLOAD_URL = "https://github.com/3xyy/3xy-userplugins-vencord/releases/latest";
 
 function useDebounced<T>(value: T, ms: number): T {
     const [v, setV] = useState(value);

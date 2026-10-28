@@ -1,76 +1,120 @@
 use crate::dsp::params::DEFAULT_GATE_AUTO_MARGIN_DB;
 
-/// Noise gate on the short-term RMS level. Below `threshold` the signal is
-/// smoothly attenuated to silence; at/above it the signal passes. Smoothing
-/// avoids clicks.
+/// Noise gate on the short-term RMS level, with a sustain rule and lookahead.
 ///
-/// Manual and auto mode both use it: their thresholds are linear RMS levels
-/// on the same scale as the input meter (`input_level`), so the gate opens
-/// where the UI draws its line. (A peak detector would sit ~9-10 dB above a
-/// noise's RMS: it opened well before the meter reached the line, and could
-/// never close at an auto "floor + 6 dB" threshold.)
+/// The detector measures the mean square of 5 ms sub-blocks of the
+/// *undelayed* input and compares each sub-block's RMS with `threshold` (a
+/// linear RMS on the same scale as the input meter, so the gate opens where
+/// the UI draws its line).
+/// - **Open:** after `SUSTAIN_BLOCKS` (8) consecutive sub-blocks at/above the
+///   threshold. A sub-block counts if its own mean square reaches the
+///   threshold, so a sound's partial first and last sub-blocks may count:
+///   a sound of 30 ms or less never opens the gate (it covers at most 7
+///   sub-blocks), one of about 45 ms or more (and clearly above the
+///   threshold) always does. Keyboard clicks are a few ms to 20 ms.
+/// - **Hold:** once open it stays open for `HOLD_SAMPLES` after the last
+///   qualifying sub-block. While held, the hold is re-armed only by
+///   `REARM_BLOCKS` (5, i.e. 25 ms) consecutive sub-blocks at/above the
+///   threshold, so key clicks typed after speech don't keep it open.
+///
+/// The audio is delayed by `LOOKAHEAD` (40 ms, equal to the sustain) through
+/// a preallocated ring, so the gate is open by the time the start of a word
+/// is heard. That delay is the gate's added latency. The hold is counted on
+/// the undelayed detector, so it includes the lookahead: the audio you hear
+/// stays open 150 ms after the level drops. Manual and auto mode both use
+/// it. Block boundaries are counted on the samples fed in, so any chain
+/// block size works. Allocation-free after `new`, lock-free, O(1) per sample.
 pub struct NoiseGate {
-    /// Mean-square envelope of the input.
-    ms_env: f32,
+    /// Sum of squares of the detector sub-block in progress, and its length.
+    block_sum: f32,
+    block_len: usize,
+    /// Consecutive detector sub-blocks at/above the threshold.
+    run: u32,
     /// Samples left to stay open after the level dropped below the threshold.
     hold: u32,
-    /// Consecutive samples the level has been at/above the threshold (arms
-    /// the hold once it reaches `ARM_SAMPLES`).
-    above: u32,
     gain: f32,
+    /// Lookahead delay line (`LOOKAHEAD` samples) and its write position.
+    ring: Vec<f32>,
+    pos: usize,
 }
 
 impl NoiseGate {
-    /// Stay open this long (150 ms) after the level drops below the
-    /// threshold, so soft word endings and short gaps between syllables
-    /// aren't chopped.
-    const HOLD_SAMPLES: u32 = 7_200;
-    /// The hold is only (re-)armed once the level has stayed at/above the
-    /// threshold this long (20 ms). Speech does that easily; a noise
-    /// fluctuation poking over the threshold for a few ms doesn't, so it
-    /// can't turn into a 150 ms open burst (opening itself stays immediate).
-    const ARM_SAMPLES: u32 = 960;
+    /// Detector sub-block (5 ms at 48 kHz).
+    const BLOCK: usize = 240;
+    /// Sub-blocks at/above the threshold needed to open: 8 x 5 ms = 40 ms.
+    const SUSTAIN_BLOCKS: u32 = 8;
+    /// Sub-blocks at/above the threshold needed to re-arm a running hold:
+    /// 5 x 5 ms = 25 ms (3 x 5 ms = 15 ms was not enough: a -20 dBFS click
+    /// tail keeps 3 sub-blocks over the line and held the gate open).
+    const REARM_BLOCKS: u32 = 5;
+    /// Audio delay through the gate (40 ms at 48 kHz).
+    pub const LOOKAHEAD: usize = 1_920;
+    /// Stay open this long on the detector's clock: 150 ms of heard audio
+    /// after the level drops below the threshold plus the lookahead, so soft
+    /// word endings and short gaps between syllables aren't chopped.
+    const HOLD_SAMPLES: u32 = 7_200 + Self::LOOKAHEAD as u32;
 
     pub fn new() -> Self {
         Self {
-            ms_env: 0.0,
+            block_sum: 0.0,
+            block_len: 0,
+            run: 0,
             hold: 0,
-            above: 0,
             gain: 1.0,
+            ring: vec![0.0; Self::LOOKAHEAD],
+            pos: 0,
         }
     }
 
-    /// Gate on the short-term RMS against `threshold` (linear RMS), holding
-    /// open for 150 ms after it drops below (once it was above for at least
-    /// 20 ms). Allocation-free, lock-free, O(1) per sample.
+    /// Forget the delayed audio and the detector's partial state, and close
+    /// (the gate was bypassed; whatever is in the ring and the gain is stale).
+    /// Allocation-free.
+    pub fn flush(&mut self) {
+        self.ring.fill(0.0);
+        self.pos = 0;
+        self.block_sum = 0.0;
+        self.block_len = 0;
+        self.run = 0;
+        self.hold = 0;
+        self.gain = 0.0;
+    }
+
+    /// Gate the signal against `threshold` (linear RMS) as described on the
+    /// type: 40 ms sustain to open, 150 ms hold, 40 ms lookahead. In place;
+    /// the output is the input delayed by `LOOKAHEAD` samples.
     pub fn process_rms(&mut self, samples: &mut [f32], threshold: f32) {
-        // Mean-square one-pole, tau = 480 samples (10 ms at 48 kHz). Symmetric
-        // (same coefficient up and down) so it is an unbiased RMS estimate:
-        // an attack/release asymmetry would bias it toward noise peaks and eat
-        // the auto gate's margin.
-        const MS_COEF: f32 = 1.0 / 480.0;
         // Gain smoothing per sample (open fast, close a touch slower).
         const GAIN_ATTACK: f32 = 0.01;
         const GAIN_RELEASE: f32 = 0.002;
 
-        let threshold_sq = threshold * threshold;
+        let threshold_sq = threshold * threshold * Self::BLOCK as f32;
         for s in samples.iter_mut() {
-            let a = s.abs();
-            self.ms_env += (a * a - self.ms_env) * MS_COEF;
-            let open = if self.ms_env >= threshold_sq {
-                self.above = self.above.saturating_add(1);
-                if self.above >= Self::ARM_SAMPLES {
-                    self.hold = Self::HOLD_SAMPLES;
+            let x = *s;
+            // Detector on the undelayed sample; a NaN/inf sample is not
+            // allowed to stick in the sum (and is not stored for replay).
+            let xf = if x.is_finite() { x } else { 0.0 };
+            self.block_sum += xf * xf;
+            self.block_len += 1;
+            if self.block_len == Self::BLOCK {
+                let above = self.block_sum >= threshold_sq;
+                self.block_sum = 0.0;
+                self.block_len = 0;
+                if above {
+                    self.run = self.run.saturating_add(1);
+                    if self.run >= Self::SUSTAIN_BLOCKS
+                        || (self.hold > 0 && self.run >= Self::REARM_BLOCKS)
+                    {
+                        self.hold = Self::HOLD_SAMPLES;
+                    }
+                } else {
+                    self.run = 0;
                 }
+            }
+            let open = if self.hold > 0 {
+                self.hold -= 1;
                 true
             } else {
-                self.above = 0;
-                if self.hold > 0 {
-                    self.hold -= 1;
-                    true
-                } else {
-                    false
-                }
+                false
             };
             let target = if open { 1.0 } else { 0.0 };
             let coef = if target > self.gain {
@@ -79,18 +123,18 @@ impl NoiseGate {
                 GAIN_RELEASE
             };
             self.gain += (target - self.gain) * coef;
-            *s *= self.gain;
-        }
-        // Keep a long digital silence from decaying the mean square into
-        // denormals (slow on x86; far below any threshold), and never let a
-        // stray NaN/inf sample stick in it.
-        if !self.ms_env.is_finite() || self.ms_env < 1e-20 {
-            self.ms_env = 0.0;
+            // Delay line: emit the sample from LOOKAHEAD samples ago.
+            let delayed = self.ring[self.pos];
+            self.ring[self.pos] = xf;
+            self.pos += 1;
+            if self.pos == Self::LOOKAHEAD {
+                self.pos = 0;
+            }
+            *s = delayed * self.gain;
         }
     }
 
     /// Whether the gate is (mostly) open after the last processed sample.
-    #[cfg(test)]
     pub fn is_open(&self) -> bool {
         self.gain > 0.5
     }
@@ -638,5 +682,60 @@ mod tests {
             "tone should pass, {} vs {dry}",
             rms(&tone[4_800..])
         );
+    }
+
+    /// Output energy of a `burst_ms` tone burst (12 dB over the line) that
+    /// starts `offset` samples into the stream, through a fresh closed gate.
+    fn burst_through_gate(burst_ms: usize, offset: usize) -> f32 {
+        let mut x = vec![0.0f32; 4_800 + offset];
+        x.extend((0..burst_ms * 48).map(|i| (i as f32 * 0.05).sin() * 0.3));
+        x.extend(vec![0.0f32; 9_600]);
+        let mut g = NoiseGate::new();
+        g.gain = 0.0;
+        g.process_rms(&mut x, 0.075);
+        rms(&x) * (x.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn gate_opens_only_after_40ms_sustain() {
+        // Sweep the burst's start across two detector sub-blocks (25 offsets,
+        // 20 samples apart): short sounds never open the gate at any
+        // alignment, long ones always do and are kept.
+        let full = |ms: usize| 0.3 / std::f32::consts::SQRT_2 * ((ms * 48) as f32).sqrt();
+        for k in 0..25 {
+            let off = k * 20;
+            for ms in [2, 5, 15, 30] {
+                let e = burst_through_gate(ms, off);
+                assert!(e < 0.05 * full(ms).max(1.0), "{ms} ms @ {off}: {e}");
+            }
+            let e = burst_through_gate(50, off);
+            assert!(e > 0.3 * full(50), "50 ms @ {off}: {e} vs {}", full(50));
+        }
+    }
+
+    #[test]
+    fn heard_audio_gets_the_full_150ms_hold() {
+        // The hold runs on the undelayed detector: it must include the 40 ms
+        // lookahead, so the gate closes ~150 ms after the *heard* audio ends
+        // (~190 ms after the input drops).
+        let mut g = NoiseGate::new();
+        let mut x = vec![0.5f32; 24_000];
+        g.process_rms(&mut x, 0.02);
+        let ms = |n: usize| n * 48;
+        let mut open_at = |after_ms: usize, g: &mut NoiseGate| {
+            let mut z = vec![0.0f32; ms(after_ms)];
+            g.process_rms(&mut z, 0.02);
+            g.is_open()
+        };
+        assert!(open_at(170, &mut g), "closed too early");
+        assert!(!open_at(60, &mut g), "still open at 230 ms");
+    }
+
+    #[test]
+    fn flush_closes_the_gate() {
+        let mut g = NoiseGate::new();
+        assert!(g.is_open());
+        g.flush();
+        assert!(!g.is_open());
     }
 }

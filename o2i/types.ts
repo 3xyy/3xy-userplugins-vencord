@@ -7,6 +7,7 @@
 // Shared by the renderer and native.ts. Types only, no runtime imports.
 
 import type { AudioStatus, EngineStatus } from "./logic/policy";
+import type { TtsVoice } from "./logic/tts";
 
 /** Discord's own voice settings, snapshotted before o2i changes them (restored on disable). */
 export interface DiscordVoiceSnapshot {
@@ -84,6 +85,10 @@ export interface StateEv {
     gate_threshold_live?: number | null;
     /** o2i's mic is muted (`set_mic_muted` or the mute hotkey), whether or not audio runs. Missing from older engines. */
     mic_muted?: boolean;
+    /** The mic is audible: not muted and (always on, the push-to-talk key held, or within its 200 ms tail). Missing from older engines. */
+    mic_open?: boolean;
+    /** A Piper voice install in progress (progress 0..1), else null. Missing from engines before text to speech. */
+    tts_install?: { id: string; progress: number; } | null;
 }
 
 export interface DevicesEv {
@@ -106,6 +111,12 @@ export interface ClipsEv {
     clips: ClipJson[];
 }
 
+/** Reply to `list_tts_voices` (also sent after a successful install). */
+export interface TtsVoicesEv {
+    ev: "tts_voices";
+    voices: TtsVoice[];
+}
+
 export interface HotkeyErrorEv {
     ev: "hotkey_error";
     accel: string;
@@ -124,7 +135,13 @@ export interface MicMutedEv {
     source: "command" | "hotkey";
 }
 
-export type EngineEvent = ReadyEv | StateEv | DevicesEv | AppsEv | ClipsEv | HotkeyErrorEv | ErrorEv | MicMutedEv;
+/** Sent when the mic opens or closes (from the engine's 50 ms tick). */
+export interface MicOpenEv {
+    ev: "mic_open";
+    open: boolean;
+}
+
+export type EngineEvent = ReadyEv | StateEv | DevicesEv | AppsEv | ClipsEv | HotkeyErrorEv | ErrorEv | MicMutedEv | MicOpenEv | TtsVoicesEv;
 
 /** A `mic_muted` event as native.ts hands it to the renderer's long-poll; `seq` counts them (1, 2, ...). */
 export interface MicMuteEvent {
@@ -152,11 +169,19 @@ export interface EngineSnapshot {
     apps: AppsEv | null;
     clips: ClipsEv | null;
     /** +1 per received devices/apps/clips event: lets the renderer keep those objects stable across polls. */
-    seq: { devices: number; apps: number; clips: number; };
+    seq: { devices: number; apps: number; clips: number; ttsVoices?: number; };
+    /** The last `tts_voices` event (null: none yet). Missing when native.ts is from before text to speech. */
+    ttsVoices?: TtsVoicesEv | null;
+    /** The latest `error` events (a short ring, not drained), numbered by `seq`. Missing from an older native.ts. */
+    recentErrors?: { seq: number; message: string; }[];
+    /** The newest `recentErrors` number (0: none yet). */
+    errorSeq?: number;
     /** `error` events since the previous poll (drained by each poll). */
     notices: EngineNotice[];
     /** The latest `mic_muted` event's number (0: none yet): where the renderer's long-poll starts. */
     micMuteSeq: number;
+    /** The latest `mic_open` event's number (0: none yet). */
+    micOpenSeq?: number;
 }
 
 export type StartResult = { ok: true; } | { ok: false; error: string; };

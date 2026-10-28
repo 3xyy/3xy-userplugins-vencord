@@ -102,6 +102,14 @@ pub fn run() -> i32 {
                             Command::ListDevices => emit(&ctl.list_devices()),
                             Command::ListApps => emit(&ctl.list_apps()),
                             Command::ListClips => emit(&ctl.list_clips()),
+                            Command::ListTtsVoices => emit(&ctl.list_tts_voices()),
+                            Command::Speak { text, voice, rate } => {
+                                ctl.speak(&text, &voice, rate).iter().for_each(emit)
+                            }
+                            Command::InstallTtsVoice { id } => {
+                                ctl.install_tts_voice(&id).iter().for_each(emit);
+                                force_state = true;
+                            }
                             Command::Shutdown => quit = Some("shutdown command"),
                         },
                     }

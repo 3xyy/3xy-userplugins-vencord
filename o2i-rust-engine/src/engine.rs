@@ -356,6 +356,23 @@ impl Engine {
         id
     }
 
+    /// Play a decoded in-memory buffer (see `ClipStream::from_buffer`, built by
+    /// the caller) as a soundboard item with live `gains`. Returns the instance
+    /// id for stop_clip. No-op (returns the id) if not running.
+    pub fn play_buffer(&self, name: String, stream: ClipStream, gains: Arc<ClipGains>) -> u64 {
+        let id = self.next_instance_id.fetch_add(1, Ordering::Relaxed);
+        if let Some(tx) = self.sb_tx.as_ref() {
+            tx.send(SbCommand::Play {
+                id,
+                name,
+                stream,
+                gains,
+            })
+            .ok();
+        }
+        id
+    }
+
     /// Jump a playing clip to `pos_frames` (48 kHz frames). The seek runs on
     /// the clip's decoder worker; the clip is silent until it lands, a paused
     /// clip stays paused, and a target at/after the end finishes it. No-op if

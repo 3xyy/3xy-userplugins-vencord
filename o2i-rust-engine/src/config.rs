@@ -101,6 +101,10 @@ pub struct Profile {
     /// When true, global settings override every clip's own settings at play time.
     #[serde(default)]
     pub sb_global_override: bool,
+    /// Text-to-speech volume (0..2), multiplying the global soundboard gains
+    /// for speech only. `None` = absent (use 1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tts_volume: Option<f32>,
     // ---- Voice changer ----
     /// Voice preset id: "off" | "manly" | "girly". `None` = absent (a config from before the voice changer).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,6 +131,15 @@ pub struct Profile {
     /// `"Ctrl+Shift+M"`. Missing, `null` or blank = no mute hotkey.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mic_mute_hotkey: Option<String>,
+    // ---- Headless only: push-to-talk ----
+    /// `"always"` (the mic is open) or `"ptt"` (open only while `ptt_key` is
+    /// held). Missing, `null` or anything else = `"always"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mic_mode: Option<String>,
+    /// Push-to-talk key, same spec format as `mic_mute_hotkey`. Missing,
+    /// `null` or blank = none (in `"ptt"` mode the mic then stays closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ptt_key: Option<String>,
     // ---- Headless only: mic quality ----
     /// Mic quality 0..100; lower sounds like a worse mic. `None` (missing or
     /// `null`) = 100, the mic untouched.
@@ -518,6 +531,29 @@ output_id = "cable"
         };
         let parsed: Config = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
         assert_eq!(parsed.profiles[0], p);
+        let back: Profile = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn ptt_fields_are_optional_and_null_tolerant() {
+        let j: Profile = serde_json::from_str(r#"{"name":"x"}"#).unwrap();
+        assert_eq!((j.mic_mode, j.ptt_key), (None, None));
+        let j: Profile =
+            serde_json::from_str(r#"{"mic_mode":null,"ptt_key":null,"gate_enabled":true}"#)
+                .unwrap();
+        assert_eq!((j.mic_mode.clone(), j.ptt_key.clone()), (None, None));
+        assert!(j.gate_enabled);
+        let j: Profile = serde_json::from_str(r#"{"mic_mode":"ptt","ptt_key":"Mouse5"}"#).unwrap();
+        assert_eq!(j.mic_mode.as_deref(), Some("ptt"));
+        assert_eq!(j.ptt_key.as_deref(), Some("Mouse5"));
+        assert!(serde_json::from_str::<Profile>(r#"{"ptt_key":4}"#).is_err());
+        let p = Profile {
+            name: "d".into(),
+            mic_mode: Some("ptt".into()),
+            ptt_key: Some("V".into()),
+            ..Default::default()
+        };
         let back: Profile = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back, p);
     }

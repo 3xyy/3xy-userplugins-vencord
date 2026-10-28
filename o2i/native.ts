@@ -15,19 +15,19 @@ import { app, BrowserWindow, dialog, type IpcMainInvokeEvent, type OpenDialogOpt
 import filthyMp3 from "file://./sounds/filthy.mp3?base64";
 import pingMp3 from "file://./sounds/ping.mp3?base64";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, statSync, utimesSync } from "fs";
-import { copyFile, readFile, rename, rm, writeFile } from "fs/promises";
+import { copyFile, readFile, rename, rm, stat, writeFile } from "fs/promises";
 import { homedir, release, tmpdir, userInfo, version as osVersion } from "os";
 import { join } from "path";
 
 import { nextDelay, STABLE_RESET_MS } from "./logic/backoff";
-import { enginePathProblem } from "./logic/exePath";
+import { enginePathProblem, folderKindProblem, folderPathProblem } from "./logic/exePath";
 import { LineSplitter } from "./logic/lines";
 import { LogFile } from "./logic/logfile";
 import { exportZipName, formatLogLine, type LogLevel } from "./logic/logrotate";
 import type { EngineStatus } from "./logic/policy";
 import { makeRedactor, redactJson } from "./logic/redact";
 import { LatestWaiters } from "./logic/waiters";
-import type { AppsEv, ClipsEv, DevicesEv, DumpResult, EngineEvent, EngineNotice, EngineSnapshot, ExportLogsResult, MicMuteEvent, StartResult, StateEv } from "./types";
+import type { AppsEv, ClipsEv, DevicesEv, DumpResult, EngineEvent, EngineNotice, EngineSnapshot, ExportLogsResult, MicMuteEvent, StartResult, StateEv, TtsVoicesEv } from "./types";
 
 const KILL_AFTER_MS = 1500;
 const STDERR_LINES = 50;
@@ -37,6 +37,8 @@ const MAX_LINE_CHARS = 500;
 const MIC_MUTE_WAIT_MAX_MS = 60000;
 /** Pending waitMicMuteEvent calls kept at most (one per renderer; a reload leaves one until its timeout). */
 const MIC_MUTE_MAX_WAITERS = 4;
+/** Recent `error` events kept for the TTS section (numbered, not drained by polls). */
+const MAX_RECENT_ERRORS = 20;
 
 // ---- plugin.log ----
 
@@ -114,12 +116,22 @@ let state: StateEv | null = null;
 let devices: DevicesEv | null = null;
 let apps: AppsEv | null = null;
 let clips: ClipsEv | null = null;
-/** Bumped on every devices/apps/clips event (see EngineSnapshot.seq). */
-const seq = { devices: 0, apps: 0, clips: 0 };
+let ttsVoices: TtsVoicesEv | null = null;
+/** Bumped on every devices/apps/clips/tts_voices event (see EngineSnapshot.seq). */
+const seq = { devices: 0, apps: 0, clips: 0, ttsVoices: 0 };
+/** The last MAX_RECENT_ERRORS `error` events; numbers keep counting across engine restarts. */
+const recentErrors: { seq: number; message: string; }[] = [];
+let errorSeq = 0;
 let notices: EngineNotice[] = [];
 let stderrRing: string[] = [];
 /** `mic_muted` events for the renderer's long-poll (waitMicMuteEvent); kept across engine restarts. */
 const micMuteEvents = new LatestWaiters<Omit<MicMuteEvent, "seq">>({
+    set: (fn, ms) => setTimeout(fn, ms),
+    clear: t => clearTimeout(t as ReturnType<typeof setTimeout>),
+}, MIC_MUTE_MAX_WAITERS);
+
+/** `mic_open` events for the renderer's long-poll (waitMicOpenEvent), so the account-panel button follows within one engine tick. */
+const micOpenEvents = new LatestWaiters<{ open: boolean; }>({
     set: (fn, ms) => setTimeout(fn, ms),
     clear: t => clearTimeout(t as ReturnType<typeof setTimeout>),
 }, MIC_MUTE_MAX_WAITERS);
@@ -210,7 +222,13 @@ function onStdoutLine(p: Proc, line: string) {
             clips = ev;
             seq.clips++;
             break;
+        case "tts_voices":
+            ttsVoices = Array.isArray(ev.voices) ? ev : { ev: "tts_voices", voices: [] };
+            seq.ttsVoices++;
+            break;
         case "error":
+            recentErrors.push({ seq: ++errorSeq, message: String(ev.message).slice(0, MAX_LINE_CHARS) });
+            if (recentErrors.length > MAX_RECENT_ERRORS) recentErrors.splice(0, recentErrors.length - MAX_RECENT_ERRORS);
             // Logged by the renderer when it drains the notices.
             notices.push({ kind: "error", message: String(ev.message) });
             if (notices.length > MAX_NOTICES) notices.splice(0, notices.length - MAX_NOTICES);
@@ -226,6 +244,11 @@ function onStdoutLine(p: Proc, line: string) {
             micMuteEvents.publish({ muted, source: typeof ev.source === "string" ? ev.source : "unknown" });
             break;
         }
+        case "mic_open":
+            // The cached state follows right away (the indicator reads state.mic_open).
+            if (state) state = { ...state, mic_open: ev.open === true };
+            micOpenEvents.publish({ open: ev.open === true });
+            break;
     }
 }
 
@@ -408,6 +431,7 @@ export async function startEngine(_: IpcMainInvokeEvent, exePath: string): Promi
 export function stopEngine(_: IpcMainInvokeEvent): void {
     if (restartTimer) nlog("info", "engine off: cancelled the pending restart");
     micMuteEvents.cancelAll(); // the renderer's long-poll ends now instead of at its timeout
+    micOpenEvents.cancelAll();
     desired = false;
     clearRestart();
     failures = 0;
@@ -431,7 +455,7 @@ export function sendCommand(_: IpcMainInvokeEvent, json: string): boolean {
 export function pollEngine(_: IpcMainInvokeEvent): EngineSnapshot {
     const drained = notices;
     notices = [];
-    return { status, generation, engineVersion, lastError, state, devices, apps, clips, seq: { ...seq }, notices: drained, micMuteSeq: micMuteEvents.seq };
+    return { status, generation, engineVersion, lastError, state, devices, apps, clips, ttsVoices, recentErrors, errorSeq, seq: { ...seq }, notices: drained, micMuteSeq: micMuteEvents.seq, micOpenSeq: micOpenEvents.seq };
 }
 
 /**
@@ -444,6 +468,18 @@ export function waitMicMuteEvent(_: IpcMainInvokeEvent, timeoutMs: number, after
         try {
             const ms = Math.min(MIC_MUTE_WAIT_MAX_MS, Math.max(0, Number(timeoutMs) || 0));
             micMuteEvents.wait(ms, typeof afterSeq === "number" && Number.isFinite(afterSeq) ? afterSeq : undefined, resolve);
+        } catch {
+            resolve(null);
+        }
+    });
+}
+
+/** Like waitMicMuteEvent, for `mic_open` events. Never rejects. */
+export function waitMicOpenEvent(_: IpcMainInvokeEvent, timeoutMs: number, afterSeq?: number): Promise<{ open: boolean; seq: number; } | null> {
+    return new Promise(resolve => {
+        try {
+            const ms = Math.min(MIC_MUTE_WAIT_MAX_MS, Math.max(0, Number(timeoutMs) || 0));
+            micOpenEvents.wait(ms, typeof afterSeq === "number" && Number.isFinite(afterSeq) ? afterSeq : undefined, resolve);
         } catch {
             resolve(null);
         }
@@ -479,6 +515,32 @@ export function pathExists(_: IpcMainInvokeEvent, p: string): boolean {
         return typeof p === "string" && enginePathProblem(p, false) === null && statSync(p).isFile();
     } catch {
         return false;
+    }
+}
+
+// ---- open a folder ----
+
+/**
+ * Opens a folder in File Explorer. Only a full local path that is a directory (shell.openPath would run
+ * a file). Never throws.
+ */
+export async function openFolder(_: IpcMainInvokeEvent, path: string): Promise<{ ok: true; } | { ok: false; error: string; }> {
+    const bad = folderPathProblem(path);
+    if (bad) return { ok: false, error: bad };
+    let info: Awaited<ReturnType<typeof stat>> | null;
+    try {
+        info = await stat(path);
+    } catch {
+        info = null;
+    }
+    const kind = folderKindProblem(info);
+    if (kind) return { ok: false, error: kind };
+    try {
+        const err = await shell.openPath(path); // "" on success
+        return err ? { ok: false, error: "Couldn't open the folder" } : { ok: true };
+    } catch (e) {
+        nlog("error", `open folder failed: ${errMsg(e)}`);
+        return { ok: false, error: "Couldn't open the folder" };
     }
 }
 
@@ -741,6 +803,7 @@ function killNow() {
     desired = false;
     clearRestart();
     micMuteEvents.cancelAll();
+    micOpenEvents.cancelAll();
     for (const p of [proc, ...dying]) {
         if (p && !p.done) {
             // before-quit and exit both land here: log the first kill only

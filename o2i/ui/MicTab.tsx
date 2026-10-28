@@ -7,7 +7,7 @@
 import { classNameFactory } from "@utils/css";
 import { useState } from "@webpack/common";
 
-import { engineClient, setMicMuted, useMicMuted, useMicMuteSupported } from "../engineClient";
+import { engineClient, setMicMuted, useMicMuted, useMicMuteSupported, usePttSupported } from "../engineClient";
 import { muteHotkeyConflict, muteKeyFiresWhileTyping, muteKeyIsSideButton } from "../logic/accel";
 import { gateLine, thresholdDb } from "../logic/meter";
 import { dbToRms, type O2iProfile } from "../logic/profile";
@@ -118,15 +118,23 @@ function useExternalRevision(p: O2iProfile): number {
 }
 
 /** Three plain buttons instead of a Select: a Select's menu lives in a portal layer and picking from it can close the popout. */
-function PresetPicker({ value, onPick }: { value: string; onPick(v: string): void; }) {
+function Segmented({ label, options, value, isDisabled, onPick }: {
+    label: string;
+    options: readonly { label: string; value: string; }[];
+    value: string;
+    /** Per option: not pickable (the selected option always stays pickable out of). */
+    isDisabled?(value: string): boolean;
+    onPick(v: string): void;
+}) {
     return (
-        <div className={cl("seg")} role="radiogroup" aria-label="Voice preset">
-            {VOICE_PRESETS.map(o => (
+        <div className={cl("seg")} role="radiogroup" aria-label={label}>
+            {options.map(o => (
                 <button
                     key={o.value}
                     type="button"
                     role="radio"
                     aria-checked={o.value === value}
+                    disabled={isDisabled?.(o.value)}
                     className={cl("seg-btn", { "seg-btn-selected": o.value === value })}
                     onClick={() => {
                         if (o.value !== value) onPick(o.value);
@@ -137,6 +145,10 @@ function PresetPicker({ value, onPick }: { value: string; onPick(v: string): voi
             ))}
         </div>
     );
+}
+
+function PresetPicker({ value, onPick }: { value: string; onPick(v: string): void; }) {
+    return <Segmented label="Voice preset" options={VOICE_PRESETS} value={value} onPick={onPick} />;
 }
 
 /**
@@ -165,10 +177,44 @@ function MonitorTarget({ id }: { id: string | null; }) {
     return <div className={cl("note")}>Plays on {name ?? "your default output"}</div>;
 }
 
-/** The mute key would also fire on a soundboard key. Reads the live profile. */
+/** The mute key would also fire on the push-to-talk key or a soundboard key. Reads the live profile. */
 function muteConflict(spec: string): string | null {
     const p = settings.store.profile;
-    return muteHotkeyConflict(p, settings.store.soundMeta, spec, sourcesOf(p));
+    return muteHotkeyConflict(p, settings.store.soundMeta, spec, sourcesOf(p), "mute");
+}
+
+/** The push-to-talk key would also fire on the mute key, the stop-all key or a sound's key. Reads the live profile. */
+function pttConflict(spec: string): string | null {
+    const p = settings.store.profile;
+    return muteHotkeyConflict(p, settings.store.soundMeta, spec, sourcesOf(p), "ptt");
+}
+
+const setMicMode = (v: string) => updateProfile(p => ({ ...p, mic_mode: v === "ptt" ? "ptt" : "always" }));
+const setPttKey = (v: string | null) => updateProfile(p => ({ ...p, ptt_key: v }));
+
+const MIC_MODES = [
+    { label: "Always on", value: "always" },
+    { label: "Push to talk", value: "ptt" },
+];
+
+/** How the mic opens: always, or only while the push-to-talk key is held. */
+function ModeSection({ mode, pttKey }: { mode: string; pttKey: string | null; }) {
+    const supported = usePttSupported();
+    const ptt = mode === "ptt";
+    return (
+        <Section title="Mic mode">
+            {/* Without engine support only "Always on" can be picked, so a user already in push to talk can switch back. */}
+            <Segmented label="Mic mode" options={MIC_MODES} value={mode} isDisabled={v => !supported && v === "ptt"} onPick={setMicMode} />
+            {ptt && (
+                <Field label="Push to talk key" disabled={!supported}>
+                    <HotkeyInput kind="mute" value={pttKey} onChange={setPttKey} validate={pttConflict} disabled={!supported} />
+                </Field>
+            )}
+            {ptt && !pttKey && <div className={cl("note")}>Set a key. Until then your mic stays closed.</div>}
+            {ptt && <div className={cl("note")}>Keep Discord's own push-to-talk off while using o2i's.</div>}
+            {!supported && <div className={cl("note")}>Update the o2i engine to use push to talk</div>}
+        </Section>
+    );
 }
 
 const setMuteHotkey = (v: string | null) => updateProfile(p => ({ ...p, mic_mute_hotkey: v }));
@@ -216,6 +262,8 @@ export function MicTab() {
     return (
         <div className={cl("tab", "tab-mic")} key={revision}>
             <MuteSection hotkey={p.mic_mute_hotkey ?? null} />
+
+            <ModeSection mode={p.mic_mode === "ptt" ? "ptt" : "always"} pttKey={p.ptt_key ?? null} />
 
             <Section title="Voice">
                 <PresetPicker value={preset} onPick={v => edit({ voice_preset: v })} />

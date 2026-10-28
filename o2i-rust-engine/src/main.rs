@@ -14,6 +14,7 @@ mod hotkeys;
 mod instance;
 mod llhooks;
 mod soundboard;
+mod tts;
 
 use audio::devices::DeviceInfo;
 use control::{apply_profile_dsp, attach_routed_apps, enumerate_devices};

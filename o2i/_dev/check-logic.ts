@@ -13,10 +13,10 @@ import { SettingsStore } from "@shared/SettingsStore";
 
 import { hotkeyConflict, hotkeyProblem, keyEventToAccel, keyEventToMuteSpec, mouseButtonToMuteSpec, muteHotkeyConflict, muteKeyFiresWhileTyping, muteKeyIsSideButton } from "../logic/accel";
 import { nextDelay } from "../logic/backoff";
-import { enginePathProblem } from "../logic/exePath";
+import { enginePathProblem, folderKindProblem, folderPathProblem } from "../logic/exePath";
 import {
-    audioWantedMs, defaultInputId, episodeCheck, fallbackDecision, fallbackMuteDecision, inputChangeTransition, isOwnInputSwitch, mayBeOnO2i, muteRestoreDue, namedDevicesListed, o2iMuteTransition,
-    onCableExactly, pickFallbackMic, pickRealMic, savedAfterHandChange
+    audioWantedMs, defaultInputId, episodeCheck, fallbackDecision, fallbackMuteDecision, inputChangeTransition, isOwnInputSwitch, mayBeOnO2i, muteRestoreDue, namedDevicesListed, o2iMuteTransition, onCableExactly, pickFallbackMic, pickRealMic, pttModeTransition,
+savedAfterHandChange
 } from "../logic/fallback";
 import { LineSplitter } from "../logic/lines";
 import { LogFile } from "../logic/logfile";
@@ -27,7 +27,7 @@ import { effectiveMute, micMuteUpdate, muteOnAttach } from "../logic/micMute";
 import { migratePluginSettings } from "../logic/migrate";
 import { fallbackAction, wantAudio } from "../logic/policy";
 import { type PowerFacts, powerTransition, restoreCheck, restoreDropped } from "../logic/power";
-import { dbToRms, effectiveProfile, type O2iProfile, rmsToDb } from "../logic/profile";
+import { dbToRms, effectiveProfile, isPttMode, type O2iProfile, rmsToDb } from "../logic/profile";
 import { RateLimiter } from "../logic/ratelimit";
 import { makeRedactor, redactJson } from "../logic/redact";
 import { posFromX, seekPending, stepSeek, throttleWait } from "../logic/seek";
@@ -37,6 +37,7 @@ import {
     shouldAddDefaultFolder, sourceLabels, sourcesOf, splitFolder, withClipHotkey, withClipSettings, withSources
 } from "../logic/sources";
 import { buildSummary, pickSettings } from "../logic/summary";
+import { capText, charCount, firstErrorAfter, groupVoices, installLabel, isSpeech, pickVoice, runtimeInstalled, speakBlocked, TTS_MAX_CHARS, type TtsVoice } from "../logic/tts";
 import { LatestWaiters } from "../logic/waiters";
 
 // LineSplitter
@@ -269,6 +270,27 @@ assert.equal(enginePathProblem(win`C:\Windows\System32\cmd.exe`, false), null); 
 assert.notEqual(enginePathProblem(win`\\server\share\x.txt`, false), null);
 assert.notEqual(enginePathProblem("notes.txt", false), null);
 
+// folderPathProblem + folderKindProblem (native.ts openFolder: a full local path that stat says is a directory)
+assert.equal(folderPathProblem(win`C:\Users\me\Sounds`), null);
+assert.equal(folderPathProblem("C:/Users/me/Sounds"), null);
+assert.notEqual(folderPathProblem(""), null);
+assert.notEqual(folderPathProblem(null), null);
+assert.notEqual(folderPathProblem("Sounds"), null); // relative
+assert.notEqual(folderPathProblem("C:Sounds"), null); // drive-relative
+assert.notEqual(folderPathProblem(win`\\server\share\Sounds`), null); // UNC
+assert.notEqual(folderPathProblem("//server/share/Sounds"), null); // UNC
+assert.notEqual(folderPathProblem(win`\\?\C:\Sounds`), null); // device namespace
+assert.notEqual(folderPathProblem(win`\\.\C:\Sounds`), null); // device namespace
+{
+    const dir = mkdtempSync(join(tmpdir(), "o2i-folder-"));
+    const file = join(dir, "a.txt");
+    writeFileSync(file, "x");
+    assert.equal(folderKindProblem(statSync(dir)), null); // an existing directory is ok
+    assert.notEqual(folderKindProblem(statSync(file)), null); // a file is never opened (it would run)
+    assert.notEqual(folderKindProblem(null), null); // missing
+    rmSync(dir, { recursive: true, force: true });
+}
+
 // profile
 const input = { name: "d", routed_apps: [{ name: "Spotify.exe", volume: 0.8 }, { name: "chrome.exe", volume: 1 }] };
 const eff = effectiveProfile(input, ["chrome.exe"]);
@@ -297,6 +319,11 @@ assert.equal(mon.gate_auto_margin_db, 6);
 const mon2 = effectiveProfile({ name: "d", monitor_mic: true, monitor_mic_volume: null, gate_auto: true, gate_auto_margin_db: 12 }, []);
 assert.deepEqual([mon2.monitor_mic, mon2.monitor_mic_volume, mon2.gate_auto, mon2.gate_auto_margin_db], [true, 1, true, 12]);
 assert.equal(effectiveProfile({ name: "d", monitor_mic_volume: 0 }, []).monitor_mic_volume, 0); // 0 is a real value
+// tts_volume is always sent explicitly (default 1, 0 is real)
+assert.equal(effectiveProfile({ name: "d" }, []).tts_volume, 1);
+assert.equal(effectiveProfile({ name: "d", tts_volume: null }, []).tts_volume, 1);
+assert.equal(effectiveProfile({ name: "d", tts_volume: 1.6 }, []).tts_volume, 1.6);
+assert.equal(effectiveProfile({ name: "d", tts_volume: 0 }, []).tts_volume, 0);
 // mic quality: always sent, missing / null = 100 (untouched); 0 is a real value
 assert.equal(mon.mic_quality, 100);
 assert.equal(effectiveProfile({ name: "d", mic_quality: null }, []).mic_quality, 100);
@@ -969,9 +996,13 @@ assert.equal(hotkeyProblem("V", "mute"), null);
 assert.equal(hotkeyProblem("Mouse4", "mute"), null);
 assert.notEqual(hotkeyProblem("V"), null);
 assert.notEqual(hotkeyProblem("V", "soundboard"), null);
-assert.notEqual(hotkeyProblem("Mouse4"), null);
-assert.notEqual(hotkeyProblem("Mouse4", "soundboard"), null);
-assert.notEqual(hotkeyProblem("Ctrl+Mouse4", "soundboard"), null); // soundboard keys can't be mouse buttons
+// soundboard rows take Mouse3-5, bare or with modifiers; left and right click stay refused
+for (const ok of ["Mouse4", "Mouse3", "Ctrl+Mouse5", "Shift+Mouse4", "Win+Mouse4", "mouse5"]) assert.equal(hotkeyProblem(ok, "soundboard"), null, ok);
+assert.equal(hotkeyProblem("Mouse4"), null);
+assert.equal(hotkeyProblem("Mouse1"), "Left and right click can't be hotkeys");
+assert.equal(hotkeyProblem("Ctrl+Mouse2", "soundboard"), "Left and right click can't be hotkeys");
+assert.notEqual(hotkeyProblem("Mouse9", "soundboard"), null);
+assert.notEqual(hotkeyProblem("Mouse", "soundboard"), null);
 assert.equal(hotkeyProblem("Ctrl+A", "soundboard"), null);
 assert.equal(hotkeyProblem("F8", "soundboard"), null);
 for (const ok of ["Ctrl+Shift+M", "Mouse3", "Mouse5", "Ctrl+Mouse5", "Win+F13", "Space", "Num0", "NumEnter", "CapsLock", "F24", "Shift+Tab", "ArrowUp", "Backquote", "ctrl + shift + m"]) {
@@ -1029,6 +1060,29 @@ assert.equal(muteKeyIsSideButton("Mouse3"), false);
 assert.equal(muteKeyIsSideButton("V"), false);
 assert.equal(muteKeyIsSideButton(null), false);
 
+// mouse sound hotkeys against the mute and push-to-talk keys, both ways (a bare key fires whatever modifiers are held)
+{
+    const sp = win`C:\s\a.mp3`;
+    const sm = { sb_clip_hotkeys: [[sp, "Mouse4"]] as [string, string][] };
+    assert.equal(hotkeyConflict({ mic_mute_hotkey: "Mouse4" }, {}, "Mouse4", sp), "Already used by the mute hotkey");
+    assert.equal(hotkeyConflict({ mic_mute_hotkey: "Mouse4" }, {}, "Ctrl+Mouse4", sp), "Already used by the mute hotkey");
+    assert.equal(hotkeyConflict({ mic_mute_hotkey: "Ctrl+Mouse4" }, {}, "Mouse4", sp), null);
+    assert.equal(hotkeyConflict({ ptt_key: "Mouse5" }, {}, "Mouse5", sp), "Already used by the push-to-talk key");
+    assert.equal(hotkeyConflict({ ptt_key: "Mouse5" }, {}, "Alt+Mouse5", sp), "Already used by the push-to-talk key");
+    assert.equal(hotkeyConflict({ ptt_key: "Mouse5" }, {}, "Mouse4", sp), null);
+    assert.equal(muteHotkeyConflict(sm, {}, "Mouse4"), "Already bound to a");
+    assert.equal(muteHotkeyConflict(sm, {}, "Mouse4", undefined, "ptt"), "Already bound to a");
+    assert.equal(muteHotkeyConflict(sm, {}, "Mouse5"), null);
+    assert.equal(muteHotkeyConflict({ sb_clip_hotkeys: [[sp, "Ctrl+Mouse4"]] }, {}, "Mouse4"), "Already bound to a");
+    // mute vs push-to-talk, either one bare
+    assert.equal(muteHotkeyConflict({ ptt_key: "Ctrl+V" }, {}, "V", undefined, "mute"), "Already used by the push-to-talk key");
+    assert.equal(muteHotkeyConflict({ mic_mute_hotkey: "Ctrl+V" }, {}, "V", undefined, "ptt"), "Already used by the mute hotkey");
+    assert.equal(muteHotkeyConflict({ mic_mute_hotkey: "V" }, {}, "Ctrl+V", undefined, "ptt"), "Already used by the mute hotkey");
+    assert.equal(muteHotkeyConflict({ mic_mute_hotkey: "Ctrl+V" }, {}, "Alt+V", undefined, "ptt"), null);
+    assert.equal(muteHotkeyConflict({ mic_mute_hotkey: "Ctrl+V" }, {}, "Ctrl+V", undefined, "ptt"), "Already used by the mute hotkey");
+    assert.equal(muteHotkeyConflict({ ptt_key: "V" }, {}, "F9", undefined, "mute"), null);
+}
+
 // conflicts between the mute key and the soundboard keys (a bare mute key fires whatever modifiers are held)
 const mk = { sb_stop_all_hotkey: "F9", sb_clip_hotkeys: [[win`C:\s\horn.mp3`, "Ctrl+H"]] as [string, string][], mic_mute_hotkey: "V" };
 assert.equal(muteHotkeyConflict(mk, {}, "F9"), "Already used by Stop all sounds");
@@ -1048,6 +1102,68 @@ assert.equal(hotkeyConflict({ ...mk, mic_mute_hotkey: "Mouse4" }, {}, "Ctrl+V", 
 assert.equal(effectiveProfile({ name: "d" }, []).mic_mute_hotkey, null);
 assert.equal(effectiveProfile({ name: "d", mic_mute_hotkey: "Mouse4" }, []).mic_mute_hotkey, "Mouse4");
 assert.equal(effectiveProfile({ name: "d", mic_mute_hotkey: "  " }, []).mic_mute_hotkey, null);
+
+// push to talk: mic_mode and ptt_key are always sent explicitly (defaults "always" and null)
+assert.equal(effectiveProfile({ name: "d" }, []).mic_mode, "always");
+assert.equal(effectiveProfile({ name: "d", mic_mode: null }, []).mic_mode, "always");
+assert.equal(effectiveProfile({ name: "d", mic_mode: "ptt" }, []).mic_mode, "ptt");
+assert.equal(effectiveProfile({ name: "d", mic_mode: "bogus" as never }, []).mic_mode, "always");
+assert.equal(effectiveProfile({ name: "d" }, []).ptt_key, null);
+assert.equal(effectiveProfile({ name: "d", ptt_key: "Mouse4" }, []).ptt_key, "Mouse4");
+assert.equal(effectiveProfile({ name: "d", ptt_key: "  " }, []).ptt_key, null);
+assert.equal(effectiveProfile({ name: "d", ptt_key: " V " }, []).ptt_key, "V");
+assert.equal(isPttMode({ mic_mode: "ptt" }), true);
+assert.equal(isPttMode({ mic_mode: "always" }), false);
+assert.equal(isPttMode({}), false);
+assert.equal(isPttMode(null), false);
+
+// the fallback self-mutes Discord when o2i's mic was muted OR in PTT mode (key held or not: fail closed)
+assert.deepEqual(fallbackMuteDecision(false, false, "fallback", null, true), { setDiscordMute: true, saveDiscordMute: false, toastSuffix: ", muted" });
+assert.deepEqual(fallbackMuteDecision(false, true, "fallback", null, true), { setDiscordMute: true, saveDiscordMute: true, toastSuffix: ", muted" }); // his own mute is saved
+assert.deepEqual(fallbackMuteDecision(false, true, "fallback", false, true), { setDiscordMute: true, saveDiscordMute: false, toastSuffix: ", muted" }); // an earlier saved value is kept
+assert.deepEqual(fallbackMuteDecision(true, false, "fallback", null, true), { setDiscordMute: true, saveDiscordMute: false, toastSuffix: ", muted" });
+assert.deepEqual(fallbackMuteDecision(false, false, "fallback", null, false), { setDiscordMute: null, saveDiscordMute: null, toastSuffix: null }); // always mode, not muted: nothing
+assert.deepEqual(fallbackMuteDecision(false, false, "fallback", null), { setDiscordMute: null, saveDiscordMute: null, toastSuffix: null }); // pttMode defaults to off
+// recovery restores Discord's previous mute whether or not PTT is on
+assert.deepEqual(fallbackMuteDecision(false, true, "recover", false, true), { setDiscordMute: false, saveDiscordMute: null, toastSuffix: null });
+assert.deepEqual(fallbackMuteDecision(false, true, "recover", true, true), { setDiscordMute: true, saveDiscordMute: null, toastSuffix: null });
+assert.deepEqual(fallbackMuteDecision(false, false, "recover", true, true), { setDiscordMute: null, saveDiscordMute: null, toastSuffix: null }); // he unmuted by hand: never re-muted
+// the toast: "o2i stopped. You're on your real mic" + suffix
+assert.equal(`o2i stopped. You're on your real mic${fallbackMuteDecision(false, false, "fallback", null, true).toastSuffix ?? ""}`, "o2i stopped. You're on your real mic, muted");
+
+// push to talk in a fallback episode: o2i's unmute must not lift the fail-closed self-mute while Discord is off CABLE
+assert.equal(o2iMuteTransition(false, () => false, false, true), "none"); // PTT, on the real mic: stays self-muted
+assert.equal(o2iMuteTransition(false, () => false, true, true), "none");
+assert.equal(o2iMuteTransition(false, () => true, false, true), "lift"); // PTT, surely on CABLE: lifted as before
+assert.equal(o2iMuteTransition(false, () => false, null, true), "none"); // his own mute: never touched
+assert.equal(o2iMuteTransition(false, () => false, false, false), "lift"); // always mode: unchanged
+assert.equal(o2iMuteTransition(true, () => false, null, true), "mute-discord");
+// the whole sequence: PTT fallback self-mutes (saved false); o2i muted then unmuted off CABLE keeps Discord muted
+const pttFall = fallbackMuteDecision(false, false, "fallback", null, true);
+assert.deepEqual(pttFall, { setDiscordMute: true, saveDiscordMute: false, toastSuffix: ", muted" });
+assert.equal(o2iMuteTransition(false, () => false, pttFall.saveDiscordMute, true), "none");
+
+// the mic mode changing: entering PTT off CABLE self-mutes Discord; on CABLE or while muted nothing; leaving lifts o2i's self-mute
+assert.equal(pttModeTransition(true, false, () => false, null), "mute-discord");
+assert.equal(pttModeTransition(true, false, () => true, null), "none");
+assert.equal(pttModeTransition(true, true, () => false, null), "none"); // muted: the mute path already handled it
+assert.equal(pttModeTransition(false, false, () => false, false), "lift");
+assert.equal(pttModeTransition(false, false, () => false, null), "none");
+assert.equal(pttModeTransition(false, true, () => false, false), "none");
+// entering PTT then applies the rule: Discord self-muted, his own mute saved
+assert.deepEqual(fallbackMuteDecision(false, false, "fallback", null, true).setDiscordMute, true);
+
+// PTT key presses never touch Discord's self-mute outside the fallback: mic_open / ptt_key are read by no decision
+// in the Discord-voice code path (only the mode, through the transitions above, and only when it changes)
+{
+    const read = (f: string) => readFileSync(`src/userplugins/o2i/${f}`, "utf8"); // run from the repo root
+    for (const f of ["discordVoice.ts", "logic/fallback.ts", "logic/policy.ts"]) {
+        const src = read(f);
+        assert.equal(/mic_open|micOpen|ptt_key|MicOpen/.test(src), false, `${f} must not react to the PTT key or mic_open`);
+    }
+    // the only caller of the mute rule for the mode is the mode-change follower, which settings.ts calls on a change only
+    assert.match(read("settings.ts"), /if \(ptt !== wasPtt\) followPttMode\(ptt\)/);
+}
 
 // micMuteUpdate: a mic_muted event persists and plays a sound only when it changes the plugin's value
 assert.deepEqual(micMuteUpdate(false, true), { persist: true, sound: "mute" });
@@ -1260,5 +1376,61 @@ assert.equal(shouldAddDefaultFolder(false, ["C:\\o2i\\sounds"], "C:\\o2i\\sounds
 assert.equal(shouldAddDefaultFolder(false, ["c:/O2I/Sounds/"], "C:\\o2i\\sounds"), false); // pathKey match
 assert.equal(shouldAddDefaultFolder(false, [], "C:\\o2i\\sounds"), true);
 assert.equal(shouldAddDefaultFolder(false, ["D:\\mine"], "C:\\o2i\\sounds"), true);
+
+// TTS: text capping counts code points like the engine (an emoji is one char, never split)
+assert.equal(TTS_MAX_CHARS, 1000);
+assert.equal(capText("a".repeat(1200)).length, 1000);
+assert.equal(capText("hello"), "hello");
+assert.equal([...capText("\u{1F600}".repeat(1001))].length, 1000);
+assert.equal(capText("\u{1F600}".repeat(1001)).includes("�"), false);
+assert.equal(charCount("\u{1F600}ab"), 3);
+assert.equal(charCount(""), 0);
+
+// TTS: voices group into Windows and Natural (piper), each keeping the engine's order
+const tv = (id: string, source: "windows" | "piper", installed: boolean, size_mb?: number): TtsVoice => ({ id, name: id, source, installed, size_mb });
+const mixed = [tv("win:a", "windows", true), tv("piper:x", "piper", false, 60), tv("win:b", "windows", true), tv("piper:y", "piper", true, 63)];
+assert.deepEqual(groupVoices(mixed).windows.map(x => x.id), ["win:a", "win:b"]);
+assert.deepEqual(groupVoices(mixed).natural.map(x => x.id), ["piper:x", "piper:y"]);
+assert.deepEqual(groupVoices([]), { windows: [], natural: [] });
+
+// TTS: a remembered voice that is installed wins; one that vanished (or isn't installed) falls back
+assert.equal(pickVoice(mixed, "piper:y"), "piper:y");
+assert.equal(pickVoice(mixed, "piper:x"), "win:a"); // not installed: fallback
+assert.equal(pickVoice(mixed, "win:gone"), "win:a"); // no longer listed: first installed, Windows preferred
+assert.equal(pickVoice(mixed, null), "win:a");
+assert.equal(pickVoice([tv("piper:y", "piper", true), tv("win:a", "windows", true)], null), "win:a"); // Windows first even when listed later
+assert.equal(pickVoice([tv("piper:x", "piper", false), tv("piper:y", "piper", true)], "win:gone"), "piper:y");
+assert.equal(pickVoice([tv("piper:x", "piper", false)], "piper:x"), null); // nothing installed
+assert.equal(pickVoice([], "win:a"), null);
+
+// TTS: the install label adds the runtime (22 MB) until one natural voice is installed
+assert.equal(runtimeInstalled(mixed), true);
+assert.equal(runtimeInstalled([tv("piper:x", "piper", false, 60), tv("win:a", "windows", true)]), false);
+assert.equal(installLabel(tv("piper:x", "piper", false, 60), true), "Install (60 MB)");
+assert.equal(installLabel(tv("piper:x", "piper", false, 60), false), "Install (60 MB + 22 MB)");
+assert.equal(installLabel(tv("piper:x", "piper", false), true), "Install");
+assert.equal(installLabel(tv("piper:x", "piper", false), false), "Install (+ 22 MB)");
+assert.equal(installLabel(tv("piper:x", "piper", false, 60.4), true), "Install (60 MB)");
+
+// TTS: the first error that arrived after the recorded seq is shown (message text is never matched)
+const errs = [{ seq: 4, message: "old" }, { seq: 5, message: "first" }, { seq: 6, message: "second" }];
+assert.equal(firstErrorAfter(errs, 4), "first");
+assert.equal(firstErrorAfter(errs, 6), null);
+assert.equal(firstErrorAfter(errs, 0), "old");
+assert.equal(firstErrorAfter(undefined, 0), null); // an older native has no error ring
+assert.equal(firstErrorAfter([], 3), null);
+
+// TTS: why Speak is blocked (null: it can go; "": nothing to say, no hint)
+const ttsOk = { running: true, audioOn: true, voice: "win:a", text: "hi" };
+assert.equal(speakBlocked(ttsOk), null);
+assert.equal(speakBlocked({ ...ttsOk, running: false }), "Turn on o2i to speak");
+assert.equal(speakBlocked({ ...ttsOk, audioOn: false }), "Turn on o2i to speak");
+assert.equal(speakBlocked({ ...ttsOk, voice: null }), "No voice installed");
+assert.equal(speakBlocked({ ...ttsOk, text: "  \n " }), "");
+
+// TTS: speech is told apart from a legacy play (path null, but a file name) so it gets no seek bar
+assert.equal(isSpeech({ name: "TTS: hello", path: null }), true);
+assert.equal(isSpeech({ name: "TTS: hello", path: "C:/s/a.mp3" }), false);
+assert.equal(isSpeech({ name: "a.mp3", path: null }), false);
 
 console.log("o2i logic: all checks passed");

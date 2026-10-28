@@ -27,7 +27,7 @@
 //! no blocking.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -108,6 +108,21 @@ pub fn parse_mute_spec(spec: &str) -> Result<MuteBinding, String> {
         trigger,
         mods: bits,
     })
+}
+
+impl MuteBinding {
+    /// Whether one physical event could fire both bindings: the same trigger,
+    /// and equal modifiers or a bare binding on either side (a bare binding
+    /// fires whatever modifiers are held).
+    pub fn overlaps(self, other: MuteBinding) -> bool {
+        self.trigger == other.trigger
+            && (self.mods == other.mods || self.mods == 0 || other.mods == 0)
+    }
+
+    /// Whether the trigger is a mouse button.
+    pub fn is_mouse(self) -> bool {
+        matches!(self.trigger, Trigger::Mouse(_))
+    }
 }
 
 fn modifier_bit(token: &str) -> Option<u8> {
@@ -359,6 +374,35 @@ impl EdgeDetector {
 }
 
 /// A keyboard hook message as `(trigger, down)`; `None` for anything else.
+impl EdgeDetector {
+    /// `on_input` plus release tracking, for hold semantics (push-to-talk):
+    /// `Some(true)` on a fresh press of the binding, `Some(false)` when the
+    /// bound key or button goes up, `None` for everything else (auto-repeat,
+    /// other keys, a combo with the wrong modifiers). A down of a key that
+    /// was already physically down before we saw it (held at startup, after
+    /// a restart) is a repeat, so it never reports `Some(true)`: the state
+    /// stays released until a fresh press. A lost key-up self-heals the same
+    /// way: the next real press is fresh and reports `Some(true)` again.
+    pub fn on_input_held(
+        &mut self,
+        binding: u64,
+        trigger: Trigger,
+        down: bool,
+        key_was_down: impl FnOnce() -> Option<bool>,
+        held_mods: impl FnOnce() -> u8,
+    ) -> Option<bool> {
+        let fired = self.on_input(binding, trigger, down, key_was_down, held_mods);
+        if fired {
+            Some(true)
+        } else if !down && binding & PRESENT != 0 && binding & TRIGGER_MASK == trigger_bits(trigger)
+        {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
 fn key_event(msg: u32, vk: u32) -> Option<(Trigger, bool)> {
     let down = match msg {
         WM_KEYDOWN | WM_SYSKEYDOWN => true,
@@ -425,12 +469,18 @@ struct Shared {
     binding: AtomicU64,
     /// Presses the controller hasn't taken yet.
     presses: AtomicU32,
+    /// The bound key or button is physically down (set on a fresh press,
+    /// cleared on its release). Written by the hook proc (and reset by the
+    /// owner on rebind); a plain atomic store, lock-free.
+    held: Arc<AtomicBool>,
 }
 
 /// The hook procedure's state, in the hook thread's TLS.
 struct HookCtx {
     shared: Arc<Shared>,
     detector: EdgeDetector,
+    /// Soundboard mouse bindings (only the `MouseSoundHook` thread has any).
+    slots: Option<Arc<SoundSlots>>,
 }
 
 impl HookCtx {
@@ -442,11 +492,59 @@ impl HookCtx {
         held_mods: impl FnOnce() -> u8,
     ) {
         let binding = self.shared.binding.load(Ordering::Relaxed);
-        if self
+        match self
             .detector
-            .on_input(binding, trigger, down, key_was_down, held_mods)
+            .on_input_held(binding, trigger, down, key_was_down, held_mods)
         {
-            self.shared.presses.fetch_add(1, Ordering::Relaxed);
+            Some(true) => {
+                self.shared.presses.fetch_add(1, Ordering::Relaxed);
+                self.shared.held.store(true, Ordering::Relaxed);
+            }
+            Some(false) => self.shared.held.store(false, Ordering::Relaxed),
+            None => {}
+        }
+    }
+
+    /// Count a press for every soundboard slot the event fires. Lock-free and
+    /// allocation-free: a fixed array of atomics.
+    fn observe_sound(&self, trigger: Trigger, down: bool, held_mods: impl Fn() -> u8) {
+        let Some(slots) = &self.slots else {
+            return;
+        };
+        for (binding, presses) in slots.bindings.iter().zip(slots.presses.iter()) {
+            if sound_fires(binding.load(Ordering::Relaxed), trigger, down, &held_mods) {
+                presses.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// Whether one soundboard mouse binding fires on this event: a button-down of
+/// its button, with exactly its modifiers held (a bare binding fires whatever
+/// is held). Mouse buttons never auto-repeat, so no edge state is needed.
+fn sound_fires(binding: u64, trigger: Trigger, down: bool, held_mods: impl FnOnce() -> u8) -> bool {
+    if !down || binding & PRESENT == 0 || binding & TRIGGER_MASK != trigger_bits(trigger) {
+        return false;
+    }
+    let want = (binding >> 16) as u8;
+    want == 0 || held_mods() == want
+}
+
+/// Most soundboard mouse bindings the hook serves at once.
+pub const MAX_MOUSE_SOUND_BINDINGS: usize = 16;
+
+/// The soundboard mouse bindings (packed, 0 = free slot) and the presses each
+/// has collected; written by `MouseSoundHook`, read by the hook procedure.
+struct SoundSlots {
+    bindings: [AtomicU64; MAX_MOUSE_SOUND_BINDINGS],
+    presses: [AtomicU32; MAX_MOUSE_SOUND_BINDINGS],
+}
+
+impl SoundSlots {
+    fn new() -> SoundSlots {
+        SoundSlots {
+            bindings: std::array::from_fn(|_| AtomicU64::new(0)),
+            presses: std::array::from_fn(|_| AtomicU32::new(0)),
         }
     }
 }
@@ -477,6 +575,7 @@ fn observe(trigger: Trigger, down: bool) {
                     Trigger::Mouse(_) => None,
                 };
                 ctx.observe(trigger, down, key_was_down, held_mods);
+                ctx.observe_sound(trigger, down, held_mods);
             }
         }
     });
@@ -539,11 +638,16 @@ impl HookThread {
     /// failed: `Err` with a message, and the thread has exited). With
     /// `install` false the thread runs its message loop without a hook
     /// (unit tests).
-    fn start(kind: HookKind, shared: Arc<Shared>, install: bool) -> Result<HookThread, String> {
+    fn start(
+        kind: HookKind,
+        shared: Arc<Shared>,
+        slots: Option<Arc<SoundSlots>>,
+        install: bool,
+    ) -> Result<HookThread, String> {
         let (ready_tx, ready_rx) = sync_channel(1);
         let handle = std::thread::Builder::new()
             .name("o2i-mute-hook".into())
-            .spawn(move || run(kind, shared, install, ready_tx))
+            .spawn(move || run(kind, shared, slots, install, ready_tx))
             .map_err(|e| format!("couldn't start the mute hotkey thread: {e}"))?;
         // The thread always answers (or drops the sender by ending).
         match ready_rx.recv() {
@@ -582,7 +686,13 @@ impl HookThread {
 
 /// Body of the hook thread: install the hook, report, pump messages until
 /// `WM_STOP_HOOK`, unhook. Never panics.
-fn run(kind: HookKind, shared: Arc<Shared>, install: bool, ready: SyncSender<Result<u32, String>>) {
+fn run(
+    kind: HookKind,
+    shared: Arc<Shared>,
+    slots: Option<Arc<SoundSlots>>,
+    install: bool,
+    ready: SyncSender<Result<u32, String>>,
+) {
     let mut msg = MSG::default();
     // SAFETY: plain Win32 calls on this thread's own queue and handle.
     let tid = unsafe {
@@ -597,6 +707,7 @@ fn run(kind: HookKind, shared: Arc<Shared>, install: bool, ready: SyncSender<Res
     set_hook_ctx(Some(HookCtx {
         shared,
         detector: EdgeDetector::new(),
+        slots,
     }));
     let hook = if install {
         match install_hook(kind) {
@@ -662,12 +773,45 @@ pub struct MuteHook {
     install: bool,
 }
 
+/// The main key or button of a packed binding (`None` = no binding).
+fn unpack_trigger(binding: u64) -> Option<Trigger> {
+    if binding & PRESENT == 0 {
+        return None;
+    }
+    let t = binding & TRIGGER_MASK;
+    Some(match t {
+        x if x == MOUSE_FLAG | 3 => Trigger::Mouse(MouseButton::Middle),
+        x if x == MOUSE_FLAG | 4 => Trigger::Mouse(MouseButton::X1),
+        x if x == MOUSE_FLAG | 5 => Trigger::Mouse(MouseButton::X2),
+        x if x & MOUSE_FLAG != 0 => return None,
+        x => Trigger::Key(x as u16),
+    })
+}
+
+/// Whether the key or button is physically down right now.
+pub fn physically_down(trigger: Trigger) -> bool {
+    let vk = match trigger {
+        Trigger::Key(vk) => vk,
+        Trigger::Mouse(MouseButton::Middle) => km::VK_MBUTTON.0,
+        Trigger::Mouse(MouseButton::X1) => km::VK_XBUTTON1.0,
+        Trigger::Mouse(MouseButton::X2) => km::VK_XBUTTON2.0,
+    };
+    async_down(vk)
+}
+
 impl MuteHook {
     pub fn new() -> MuteHook {
+        MuteHook::with_held(Arc::new(AtomicBool::new(false)))
+    }
+
+    /// A hook that publishes "the bound key is down" into `held` (the PTT
+    /// flag in `MicParams`).
+    pub fn with_held(held: Arc<AtomicBool>) -> MuteHook {
         MuteHook {
             shared: Arc::new(Shared {
                 binding: AtomicU64::new(0),
                 presses: AtomicU32::new(0),
+                held,
             }),
             thread: None,
             error: None,
@@ -693,6 +837,7 @@ impl MuteHook {
             }
             Ok(binding) => {
                 let kind = binding.kind();
+                self.clear_held();
                 self.shared.binding.store(binding.pack(), Ordering::Relaxed);
                 // A thread that ended on its own (its message loop failed)
                 // has no hook any more: start a fresh one.
@@ -701,7 +846,7 @@ impl MuteHook {
                 }
                 if self.thread.as_ref().map(|t| t.kind) != Some(kind) {
                     self.stop_thread();
-                    match HookThread::start(kind, self.shared.clone(), self.install) {
+                    match HookThread::start(kind, self.shared.clone(), None, self.install) {
                         Ok(t) => self.thread = Some(t),
                         Err(message) => {
                             self.shared.binding.store(0, Ordering::Relaxed);
@@ -733,10 +878,32 @@ impl MuteHook {
         self.error.as_ref()
     }
 
+    /// Safety net for a key-up the hook never saw (released while an elevated
+    /// window had focus, secure desktop, hook timeout). While the flag says
+    /// held, ask `probe` whether the bound key or button is physically down;
+    /// returns true when the flag is held and the probe says up. The caller
+    /// decides when to clear (see `clear_held`). Runs off the hook thread.
+    pub fn held_but_physically_up(&self, probe: impl FnOnce(Trigger) -> bool) -> bool {
+        if !self.shared.held.load(Ordering::Relaxed) {
+            return false;
+        }
+        match unpack_trigger(self.shared.binding.load(Ordering::Relaxed)) {
+            Some(t) => !probe(t),
+            None => false,
+        }
+    }
+
+    /// Forget a held key: the flag reads released until the next fresh press
+    /// (a key still physically down only auto-repeats, which doesn't count).
+    pub fn clear_held(&self) {
+        self.shared.held.store(false, Ordering::Relaxed);
+    }
+
     fn disable(&mut self) {
         self.shared.binding.store(0, Ordering::Relaxed);
         self.stop_thread();
         self.shared.presses.store(0, Ordering::Relaxed);
+        self.clear_held();
     }
 
     fn stop_thread(&mut self) {
@@ -752,6 +919,111 @@ impl Drop for MuteHook {
     }
 }
 
+/// The soundboard hotkeys that use a mouse button: one `WH_MOUSE_LL` hook
+/// thread (same pass-through and press rules as the mute key) serving up to
+/// `MAX_MOUSE_SOUND_BINDINGS` bindings. The thread runs only while at least
+/// one binding is set. Presses are counted per slot in atomics and drained by
+/// the controller's tick.
+pub struct MouseSoundHook {
+    /// Unused by the procedure here (its mute binding stays 0).
+    shared: Arc<Shared>,
+    slots: Arc<SoundSlots>,
+    thread: Option<HookThread>,
+    install: bool,
+}
+
+impl MouseSoundHook {
+    pub fn new() -> MouseSoundHook {
+        MouseSoundHook {
+            shared: Arc::new(Shared {
+                binding: AtomicU64::new(0),
+                presses: AtomicU32::new(0),
+                held: Arc::new(AtomicBool::new(false)),
+            }),
+            slots: Arc::new(SoundSlots::new()),
+            thread: None,
+            install: !cfg!(test),
+        }
+    }
+
+    /// Replace the bindings (slot `i` = `bindings[i]`; extra ones beyond the
+    /// maximum are ignored, callers check the count). An empty list stops the
+    /// thread. `Err` when the hook couldn't be installed; no binding is active
+    /// then.
+    pub fn set(&mut self, bindings: &[MuteBinding]) -> Result<(), String> {
+        for (i, slot) in self.slots.bindings.iter().enumerate() {
+            let packed = bindings.get(i).map_or(0, |b| b.pack());
+            slot.store(packed, Ordering::Relaxed);
+            self.slots.presses[i].store(0, Ordering::Relaxed);
+        }
+        if bindings.is_empty() {
+            self.stop_thread();
+            return Ok(());
+        }
+        if self.thread.as_ref().is_some_and(|t| t.handle.is_finished()) {
+            self.stop_thread();
+        }
+        if self.thread.is_none() {
+            match HookThread::start(
+                HookKind::Mouse,
+                self.shared.clone(),
+                Some(self.slots.clone()),
+                self.install,
+            ) {
+                Ok(t) => self.thread = Some(t),
+                Err(message) => {
+                    self.clear_slots();
+                    return Err(message);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Take the presses collected per slot since the last call.
+    pub fn take_presses(&self) -> [u32; MAX_MOUSE_SOUND_BINDINGS] {
+        std::array::from_fn(|i| self.slots.presses[i].swap(0, Ordering::Relaxed))
+    }
+
+    fn clear_slots(&self) {
+        for (b, p) in self.slots.bindings.iter().zip(self.slots.presses.iter()) {
+            b.store(0, Ordering::Relaxed);
+            p.store(0, Ordering::Relaxed);
+        }
+    }
+
+    fn stop_thread(&mut self) {
+        if let Some(t) = self.thread.take() {
+            t.stop();
+        }
+    }
+}
+
+impl Drop for MouseSoundHook {
+    fn drop(&mut self) {
+        self.clear_slots();
+        self.stop_thread();
+    }
+}
+
+#[cfg(test)]
+impl MouseSoundHook {
+    pub(crate) fn running(&self) -> bool {
+        self.thread.is_some()
+    }
+
+    /// Feed one injected mouse event through the same per-slot rule the hook
+    /// procedure runs; counts a press for every slot that fires.
+    pub(crate) fn simulate_event(&self, trigger: Trigger, down: bool, held_mods: u8) {
+        let ctx = HookCtx {
+            shared: self.shared.clone(),
+            detector: EdgeDetector::new(),
+            slots: Some(self.slots.clone()),
+        };
+        ctx.observe_sound(trigger, down, || held_mods);
+    }
+}
+
 #[cfg(test)]
 impl MuteHook {
     /// Which hook the thread runs (`None` = no thread).
@@ -763,6 +1035,10 @@ impl MuteHook {
     }
 
     /// What the hook procedure does for a press of the bound key.
+    pub(crate) fn simulate_held(&self, held: bool) {
+        self.shared.held.store(held, Ordering::Relaxed);
+    }
+
     pub(crate) fn simulate_press(&self) {
         self.shared.presses.fetch_add(1, Ordering::Relaxed);
     }
@@ -924,6 +1200,134 @@ mod tests {
         // No binding: nothing fires.
         let mut d = EdgeDetector::new();
         assert!(!d.on_input(0, v, true, untracked, || 0));
+    }
+
+    /// Fold a sequence of (down, key_was_down, mods) events into the held flag,
+    /// the way the hook proc does. `key_was_down` of `None` = untracked.
+    fn held_after(spec: &str, trigger: Trigger, events: &[(bool, Option<bool>, u8)]) -> bool {
+        let binding = parse_mute_spec(spec).unwrap().pack();
+        let mut d = EdgeDetector::new();
+        let mut held = false;
+        for &(down, was_down, mods) in events {
+            match d.on_input_held(binding, trigger, down, || was_down, || mods) {
+                Some(h) => held = h,
+                None => {}
+            }
+        }
+        held
+    }
+
+    #[test]
+    fn ptt_opens_only_while_held() {
+        let v = Trigger::Key(VK_V);
+        // Fresh press (key was up before the event), repeats, release.
+        assert!(held_after("V", v, &[(true, Some(false), 0)]));
+        assert!(held_after(
+            "V",
+            v,
+            &[
+                (true, Some(false), 0),
+                (true, Some(true), 0),
+                (true, Some(true), 0)
+            ]
+        ));
+        assert!(!held_after(
+            "V",
+            v,
+            &[
+                (true, Some(false), 0),
+                (true, Some(true), 0),
+                (false, Some(true), 0)
+            ]
+        ));
+        // Nothing yet: released.
+        assert!(!held_after("V", v, &[]));
+        // Other keys and buttons never press or release it.
+        let mut d = EdgeDetector::new();
+        let b = parse_mute_spec("V").unwrap().pack();
+        let m = Trigger::Key(VK_M);
+        assert_eq!(d.on_input_held(b, m, true, || Some(false), || 0), None);
+        assert_eq!(
+            d.on_input_held(b, v, true, || Some(false), || 0),
+            Some(true)
+        );
+        assert_eq!(d.on_input_held(b, m, false, || Some(true), || 0), None);
+        assert_eq!(
+            d.on_input_held(b, v, false, || Some(true), || 0),
+            Some(false)
+        );
+        // No binding: nothing.
+        assert_eq!(d.on_input_held(0, v, true, || Some(false), || 0), None);
+        assert_eq!(d.on_input_held(0, v, false, || Some(true), || 0), None);
+        // Mouse buttons: every down is a press, up releases.
+        let x2 = Trigger::Mouse(MouseButton::X2);
+        assert!(held_after("Mouse5", x2, &[(true, None, 0)]));
+        assert!(!held_after(
+            "Mouse5",
+            x2,
+            &[(true, None, 0), (false, None, 0)]
+        ));
+        // A bare key is held whatever modifiers are down; a combo needs them.
+        assert!(held_after("V", v, &[(true, Some(false), MOD_SHIFT)]));
+        assert!(!held_after("Ctrl+V", v, &[(true, Some(false), 0)]));
+        assert!(held_after("Ctrl+V", v, &[(true, Some(false), MOD_CTRL)]));
+        // Ctrl released first: the combo stays held until V itself is up.
+        assert!(held_after(
+            "Ctrl+V",
+            v,
+            &[(true, Some(false), MOD_CTRL), (true, Some(true), 0)]
+        ));
+    }
+
+    #[test]
+    fn ptt_key_already_down_is_not_held_until_fresh_press() {
+        // Held when the engine started: only auto-repeats arrive.
+        let v = Trigger::Key(VK_V);
+        assert!(!held_after(
+            "V",
+            v,
+            &[(true, Some(true), 0), (true, Some(true), 0)]
+        ));
+        // Released and pressed again: now held.
+        assert!(held_after(
+            "V",
+            v,
+            &[
+                (true, Some(true), 0),
+                (false, Some(true), 0),
+                (true, Some(false), 0)
+            ]
+        ));
+    }
+
+    #[test]
+    fn ptt_lost_keyup_then_down_works() {
+        // The key-up was swallowed (secure desktop, hook timeout): the flag is
+        // stuck held. The next real press sees the key as up and is fresh,
+        // so the cycle continues normally.
+        let v = Trigger::Key(VK_V);
+        let binding = parse_mute_spec("V").unwrap().pack();
+        let mut d = EdgeDetector::new();
+        assert_eq!(
+            d.on_input_held(binding, v, true, || Some(false), || 0),
+            Some(true)
+        );
+        // (key-up lost) next press:
+        assert_eq!(
+            d.on_input_held(binding, v, true, || Some(false), || 0),
+            Some(true)
+        );
+        assert_eq!(
+            d.on_input_held(binding, v, false, || Some(true), || 0),
+            Some(false)
+        );
+        // Also when async state is unavailable: the old held state would make
+        // it a repeat, so the key-up is what recovers. Rebinding resets.
+        let other = parse_mute_spec("F8").unwrap().pack();
+        assert_eq!(
+            d.on_input_held(other, Trigger::Key(0x77), true, || None, || 0),
+            Some(true)
+        );
     }
 
     #[test]
@@ -1166,6 +1570,7 @@ mod tests {
         Arc::new(Shared {
             binding: AtomicU64::new(0),
             presses: AtomicU32::new(0),
+            held: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -1175,6 +1580,7 @@ mod tests {
         let mut ctx = HookCtx {
             shared: shared.clone(),
             detector: EdgeDetector::new(),
+            slots: None,
         };
         let x1 = Trigger::Mouse(MouseButton::X1);
         ctx.observe(x1, true, untracked, || 0);
@@ -1191,6 +1597,52 @@ mod tests {
         assert_eq!(shared.presses.swap(0, Ordering::Relaxed), 3);
         ctx.observe(Trigger::Mouse(MouseButton::X2), true, untracked, || 0);
         assert_eq!(shared.presses.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn hook_ctx_publishes_held_state() {
+        let shared = shared();
+        shared
+            .binding
+            .store(parse_mute_spec("Mouse5").unwrap().pack(), Ordering::Relaxed);
+        let mut ctx = HookCtx {
+            shared: shared.clone(),
+            detector: EdgeDetector::new(),
+            slots: None,
+        };
+        let x2 = Trigger::Mouse(MouseButton::X2);
+        assert!(!shared.held.load(Ordering::Relaxed));
+        ctx.observe(x2, true, untracked, || 0);
+        assert!(shared.held.load(Ordering::Relaxed));
+        ctx.observe(Trigger::Mouse(MouseButton::X1), false, untracked, || 0);
+        assert!(shared.held.load(Ordering::Relaxed), "another button's up");
+        ctx.observe(x2, false, untracked, || 0);
+        assert!(!shared.held.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn mouse_sound_hook_runs_only_while_bound_and_counts_per_slot() {
+        let mut h = MouseSoundHook::new();
+        assert!(!h.running());
+        let a = parse_mute_spec("Mouse4").unwrap();
+        let b = parse_mute_spec("Ctrl+Mouse4").unwrap();
+        assert!(h.set(&[a, b]).is_ok());
+        assert!(h.running());
+        let x1 = Trigger::Mouse(MouseButton::X1);
+        h.simulate_event(x1, true, MOD_CTRL);
+        h.simulate_event(x1, false, MOD_CTRL);
+        h.simulate_event(x1, true, 0);
+        let mut want = [0u32; MAX_MOUSE_SOUND_BINDINGS];
+        want[0] = 2; // bare: both downs
+        want[1] = 1; // combo: only the Ctrl one
+        assert_eq!(h.take_presses(), want);
+        assert_eq!(h.take_presses(), [0; MAX_MOUSE_SOUND_BINDINGS]);
+        // Rebinding drops the old bindings; empty stops the thread.
+        assert!(h.set(&[b]).is_ok());
+        h.simulate_event(x1, true, 0);
+        assert_eq!(h.take_presses(), [0; MAX_MOUSE_SOUND_BINDINGS]);
+        assert!(h.set(&[]).is_ok());
+        assert!(!h.running());
     }
 
     #[test]

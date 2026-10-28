@@ -94,6 +94,15 @@ pub struct MicParams {
     /// mic monitor hear); the soundboard and routed apps are not affected.
     /// Not a profile setting, so `configure` never changes it.
     mic_muted: AtomicBool,
+    /// Push-to-talk mode (`profile.mic_mode == "ptt"`): the chain gates the
+    /// mic open only while `ptt_held` (plus a release tail).
+    ptt_mode: AtomicBool,
+    /// The PTT key is held. Written by the hook thread (shared through
+    /// `Arc`), read by the capture thread once per block.
+    ptt_held: Arc<AtomicBool>,
+    /// Published by the chain each block: the PTT gate is open (key held or
+    /// in the release tail). Meaningful only in PTT mode.
+    ptt_open: AtomicBool,
     /// Mic quality 0..100 (f32 bits): lower values make the mic sound worse
     /// (`degrade` stage); 100 leaves it untouched.
     mic_quality: AtomicU32,
@@ -118,6 +127,9 @@ impl Default for MicParams {
             gate_auto_margin_db: AtomicU32::new(DEFAULT_GATE_AUTO_MARGIN_DB.to_bits()),
             gate_threshold_live: AtomicU32::new(0.0f32.to_bits()),
             mic_muted: AtomicBool::new(false),
+            ptt_mode: AtomicBool::new(false),
+            ptt_held: Arc::new(AtomicBool::new(false)),
+            ptt_open: AtomicBool::new(false),
             mic_quality: AtomicU32::new(100.0f32.to_bits()),
         }
     }
@@ -243,6 +255,30 @@ impl MicParams {
         self.mic_muted.store(v, Ordering::Relaxed);
     }
 
+    pub fn ptt_mode(&self) -> bool {
+        self.ptt_mode.load(Ordering::Relaxed)
+    }
+    pub fn set_ptt_mode(&self, v: bool) {
+        self.ptt_mode.store(v, Ordering::Relaxed);
+    }
+    pub fn ptt_held(&self) -> bool {
+        self.ptt_held.load(Ordering::Relaxed)
+    }
+    #[cfg(test)]
+    pub fn set_ptt_held(&self, v: bool) {
+        self.ptt_held.store(v, Ordering::Relaxed);
+    }
+    /// The flag the PTT hook thread writes.
+    pub fn ptt_held_handle(&self) -> Arc<AtomicBool> {
+        self.ptt_held.clone()
+    }
+    pub fn ptt_open(&self) -> bool {
+        self.ptt_open.load(Ordering::Relaxed)
+    }
+    pub fn set_ptt_open(&self, v: bool) {
+        self.ptt_open.store(v, Ordering::Relaxed);
+    }
+
     pub fn mic_quality(&self) -> f32 {
         f32::from_bits(self.mic_quality.load(Ordering::Relaxed))
     }
@@ -303,6 +339,17 @@ mod tests {
         // The handle is the same atomic the accessors use.
         let h = p.monitor_mic_volume_handle();
         assert!((f32::from_bits(h.load(Ordering::Relaxed)) - 1.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ptt_flags_default_closed_and_round_trip() {
+        let p = MicParams::new();
+        assert!(!p.ptt_mode() && !p.ptt_held() && !p.ptt_open());
+        p.ptt_held_handle().store(true, Ordering::Relaxed);
+        assert!(p.ptt_held(), "the handle is the same flag");
+        p.set_ptt_mode(true);
+        p.set_ptt_open(true);
+        assert!(p.ptt_mode() && p.ptt_open());
     }
 
     #[test]

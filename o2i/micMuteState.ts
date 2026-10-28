@@ -37,6 +37,48 @@ export function effectiveMicMuted(): boolean {
     return effectiveMute(settings.store.micMuted === true, engineCanMute);
 }
 
+/** The last engine that reported its state reports `mic_open` (null: none has reported yet). */
+let engineCanPtt: boolean | null = null;
+
+/** Whether the running engine does push to talk (engineClient, per snapshot with a state). Notifies only on a change. */
+export function noteEngineCanPtt(can: boolean): void {
+    if (engineCanPtt === can) return;
+    engineCanPtt = can;
+    notify(listeners);
+}
+
+/** The last engine that reported can't do push to talk (an o2i.exe from before it). */
+export function enginePttUnsupported(): boolean {
+    return engineCanPtt === false;
+}
+
+/** Whether the mic is audible right now (the engine's `mic_open`; null: unknown). */
+let micOpen: boolean | null = null;
+const openListeners = new Set<() => void>();
+
+export function noteMicOpen(open: boolean | null): void {
+    if (micOpen === open) return;
+    micOpen = open;
+    notify(openListeners);
+}
+
+export function getMicOpen(): boolean | null {
+    return micOpen;
+}
+
+export function subscribeMicOpen(fn: () => void): () => void {
+    openListeners.add(fn);
+    return () => { openListeners.delete(fn); };
+}
+
+function notify(set: Set<() => void>) {
+    for (const fn of set) {
+        try {
+            fn();
+        } catch { /* a subscriber's failure never stops the others */ }
+    }
+}
+
 export function subscribeMuteSupport(fn: () => void): () => void {
     listeners.add(fn);
     return () => { listeners.delete(fn); };

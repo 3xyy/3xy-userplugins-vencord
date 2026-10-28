@@ -25,7 +25,7 @@ import { micMuteUpdate, muteOnAttach } from "./logic/micMute";
 import { wantAudio } from "./logic/policy";
 import { effectiveProfile, type O2iProfile } from "./logic/profile";
 import { throttleWait } from "./logic/seek";
-import { effectiveMicMuted, engineCannotMute, noteEngineCanMute, subscribeMuteSupport } from "./micMuteState";
+import { effectiveMicMuted, engineCannotMute, enginePttUnsupported, getMicOpen, noteEngineCanMute, noteEngineCanPtt, noteMicOpen, subscribeMicOpen, subscribeMuteSupport } from "./micMuteState";
 import { settings } from "./settings";
 import type { EngineSnapshot, MicMuteEvent, StartResult } from "./types";
 
@@ -202,6 +202,80 @@ function onMicMuted(muted: boolean, source: string): void {
     }
 }
 
+/** The mic open / closed state for the account-panel button (null: unknown); re-renders only when it changes. */
+export function useMicOpen(): boolean | null {
+    return React.useSyncExternalStore(subscribeMicOpen, getMicOpen);
+}
+
+/** The running engine does push to talk (it reports `state.mic_open`); true until an engine says otherwise. */
+export function usePttSupported(): boolean {
+    return !React.useSyncExternalStore(subscribeMuteSupport, enginePttUnsupported);
+}
+
+/** Records push-to-talk support and the current mic state from a polled snapshot. */
+function checkPttSupport(snap: EngineSnapshot): void {
+    if (snap.status !== "running") {
+        noteMicOpen(null);
+        return;
+    }
+    if (!snap.state) return;
+    const open = snap.state.mic_open;
+    noteEngineCanPtt(typeof open === "boolean");
+    noteMicOpen(typeof open === "boolean" ? open : null);
+}
+
+let openWatchToken = 0;
+let openWatching = false;
+let openSeq = 0;
+let openWaitFailures = 0;
+let openWaitMissingLogged = false;
+
+/** The long-poll loop for `mic_open`: updates the indicator right away instead of at the next poll. */
+function startOpenWatch(baseline: number): void {
+    if (openWatching || !IS_DISCORD_DESKTOP) return;
+    try {
+        if (typeof getNative().waitMicOpenEvent !== "function") {
+            if (!openWaitMissingLogged) olog.warn("restart Discord to finish updating o2i: until then the push-to-talk indicator updates once a second");
+            openWaitMissingLogged = true;
+            return;
+        }
+    } catch {
+        return;
+    }
+    openWatching = true;
+    openSeq = baseline;
+    const token = ++openWatchToken;
+    const run = async () => {
+        while (token === openWatchToken && active) {
+            let ev: { open: boolean; seq: number; } | null;
+            try {
+                ev = await getNative().waitMicOpenEvent(MUTE_WAIT_MS, openSeq);
+                openWaitFailures = 0;
+            } catch (e) {
+                if (!openWaitFailures++) olog.error("waiting for mic open changes failed (logged once until it works again)", e);
+                await new Promise(r => setTimeout(r, MUTE_RETRY_MS));
+                continue;
+            }
+            if (token !== openWatchToken || !active) return;
+            if (ev && ev.seq !== openSeq) {
+                openSeq = ev.seq;
+                noteMicOpen(ev.open === true);
+            }
+        }
+    };
+    run()
+        .catch(e => olog.error("the mic open watch stopped", e))
+        .finally(() => {
+            if (token === openWatchToken) openWatching = false;
+        });
+}
+
+function stopOpenWatch(): void {
+    openWatchToken++;
+    openWatching = false;
+    noteMicOpen(null);
+}
+
 /** The running engine reports no `state.mic_muted`: an o2i.exe from before the mic mute. */
 function muteUnsupported(snap: EngineSnapshot): boolean {
     return snap.status === "running" && snap.state != null && typeof snap.state.mic_muted !== "boolean";
@@ -312,6 +386,7 @@ function attachMute(snap: EngineSnapshot): void {
     }
     pendingMute = m.send ? true : null;
     startMuteWatch(snap.micMuteSeq ?? 0);
+    startOpenWatch(snap.micOpenSeq ?? 0);
 }
 
 /**
@@ -501,17 +576,19 @@ function logChanges(snap: EngineSnapshot) {
 }
 
 /** Last devices/apps/clips object per sequence number: IPC hands back a fresh clone every poll. */
-const stable: { [K in "devices" | "apps" | "clips"]: { seq: number; value: EngineSnapshot[K]; } } = {
+const stable: { [K in "devices" | "apps" | "clips" | "ttsVoices"]: { seq: number; value: EngineSnapshot[K]; } } = {
     devices: { seq: -1, value: null },
     apps: { seq: -1, value: null },
     clips: { seq: -1, value: null },
+    ttsVoices: { seq: -1, value: null },
 };
 
 function stabilize(snap: EngineSnapshot): EngineSnapshot {
-    for (const k of ["devices", "apps", "clips"] as const) {
+    for (const k of ["devices", "apps", "clips", "ttsVoices"] as const) {
+        const n = snap.seq[k] ?? 0; // ttsVoices: missing from a native.ts that predates text to speech
         const cur = stable[k];
-        if (cur.seq === snap.seq[k]) (snap as any)[k] = cur.value;
-        else stable[k] = { seq: snap.seq[k], value: snap[k] } as any;
+        if (cur.seq === n) (snap as any)[k] = cur.value;
+        else stable[k] = { seq: n, value: snap[k] } as any;
     }
     return snap;
 }
@@ -552,6 +629,7 @@ async function onSnapshot(snap: EngineSnapshot) {
     if (!active) return; // stopped meanwhile: no tick, and above all no fallback/recover after stop()'s restore
     setSnapshot(snap);
     checkMuteSupport(snap);
+    checkPttSupport(snap);
     // Before the fallback (which reads the name), but a failure here must never skip the fallback.
     try {
         rememberMic(snap);
@@ -599,6 +677,7 @@ async function start(): Promise<void> {
         active = false;
         stopPolling();
         stopMuteWatch();
+    stopOpenWatch();
         pendingMute = null;
         stopNative();
         setSnapshot({ ...EMPTY, status: "unset", lastError: res.error });
@@ -628,6 +707,7 @@ function stop(): void {
     active = false;
     stopPolling();
     stopMuteWatch();
+    stopOpenWatch();
     pendingMute = null;
     stopUnsetWatch();
     unwatchVoiceChannel();

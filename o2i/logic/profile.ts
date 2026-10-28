@@ -49,6 +49,8 @@ export interface O2iProfile {
     monitor_mic?: boolean;
     /** 0–2; null = 1. */
     monitor_mic_volume?: number | null;
+    /** Text to speech loudness, 0 to 2; null = 1. */
+    tts_volume?: number | null;
     /** The gate threshold follows the noise floor. */
     gate_auto?: boolean;
     /** 0–40 dB above the noise floor; null = 6. */
@@ -57,6 +59,17 @@ export interface O2iProfile {
     mic_mute_hotkey?: string | null;
     /** 0–100: lower makes the mic sound worse (narrower band, lower rate and bit depth); null = 100, untouched. */
     mic_quality?: number | null;
+    /** "always": the mic is open (unless muted); "ptt": open only while `ptt_key` is held (the engine's input hook). null = "always". */
+    mic_mode?: MicMode | null;
+    /** The push-to-talk key, same spec format as `mic_mute_hotkey`; null = none (in "ptt" mode the mic stays closed). */
+    ptt_key?: string | null;
+}
+
+export type MicMode = "always" | "ptt";
+
+/** The profile is in push-to-talk mode (anything but "ptt" counts as "always"). */
+export function isPttMode(p: Pick<O2iProfile, "mic_mode"> | null | undefined): boolean {
+    return p?.mic_mode === "ptt";
 }
 
 /**
@@ -73,10 +86,13 @@ export function effectiveProfile(p: O2iProfile, muted: string[]): O2iProfile {
         // Explicit values: the engine keeps its current value for a missing field, and rejects some nulls.
         monitor_mic: p.monitor_mic ?? false,
         monitor_mic_volume: p.monitor_mic_volume ?? 1,
+        tts_volume: p.tts_volume ?? 1,
         gate_auto: p.gate_auto ?? false,
         gate_auto_margin_db: p.gate_auto_margin_db ?? 6,
         mic_quality: p.mic_quality ?? 100,
         mic_mute_hotkey: p.mic_mute_hotkey?.trim() || null,
+        mic_mode: isPttMode(p) ? "ptt" : "always",
+        ptt_key: p.ptt_key?.trim() || null,
     };
     if (p.sb_clip_hotkeys) {
         const sources = sourcesOf(p);

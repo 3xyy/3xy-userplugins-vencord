@@ -5,7 +5,7 @@
 //! icon queries run on their own MTA threads (see `control`, `apps`); engine
 //! audio runs on the engine's threads.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,22 +15,25 @@ use crate::audio::format::SAMPLE_RATE;
 use crate::audio::mixer::store_f32;
 use crate::audio::processes;
 use crate::config::{Profile, RoutedApp};
-use crate::control::{apply_profile_dsp, attach_routed_apps, enumerate_devices};
+use crate::control::{apply_profile_dsp, attach_routed_apps, enumerate_devices, is_ptt_mode};
 use crate::elog;
 use crate::engine::{CoreStatus, CoreStream, Engine};
 use crate::headless::apps;
 use crate::headless::protocol::{
     AppStatusJson, AudioStatus, ClipJson, DeviceJson, Event, HotkeyErrorJson, MuteSource,
-    PlayingJson, StateEv,
+    PlayingJson, StateEv, TtsInstallJson,
 };
 use crate::hotkey_thread::{
-    bindings_from_profile, HotkeyAction, HotkeyEvent, HotkeyThread, SoundKey,
+    bindings_from_profile, plan_bindings, BindingPlan, HotkeyAction, HotkeyEvent, HotkeyThread,
+    SoundKey,
 };
 use crate::instance::InstanceLock;
-use crate::llhooks::MuteHook;
+use crate::llhooks::{parse_mute_spec, MouseSoundHook, MuteBinding, MuteHook};
 use crate::soundboard::decode::{probe_duration, ClipDecoder};
 use crate::soundboard::folder::list_audio_files;
 use crate::soundboard::ClipGains;
+use crate::tts::piper::{self, Piper};
+use crate::tts::{self, Done, Tts};
 
 /// How often `tick()` re-checks routed apps while audio runs.
 const ROUTED_RETRY: Duration = Duration::from_secs(3);
@@ -41,7 +44,12 @@ const CORE_START_POLL: Duration = Duration::from_millis(10);
 const AUDIO_RETRY: Duration = Duration::from_secs(2);
 /// At most this many mute hotkey presses are applied per `tick()` (far more
 /// than a hand can press in one 50 ms tick).
+/// Ticks (50 ms each) a held PTT key must read physically up before the
+/// flag is cleared.
+const PTT_UP_POLLS: u8 = 2;
 const MAX_MUTE_PRESSES_PER_TICK: u32 = 16;
+/// Most presses of one mouse sound hotkey played per tick.
+const MAX_SOUND_PRESSES_PER_TICK: u32 = 8;
 
 /// Shown when another o2i holds the machine-wide audio lock.
 const LOCK_BUSY: &str =
@@ -290,6 +298,29 @@ pub fn resolve_clip_gains(p: &Profile, path: &Path) -> (f32, f32, bool) {
         .unwrap_or((1.0, 1.0, false))
 }
 
+/// Text-to-speech volume: `tts_volume` clamped to 0..2; unset or not finite
+/// = 1.0.
+pub fn tts_volume(p: &Profile) -> f32 {
+    match p.tts_volume {
+        Some(v) if v.is_finite() => v.clamp(0.0, 2.0),
+        _ => 1.0,
+    }
+}
+
+/// `(vol_others, vol_self, hear_local)` for text-to-speech: the global
+/// soundboard gains (unity when unset), whether or not they override, times
+/// `tts_volume`. Speech only; clips never see the volume. The mixer does not
+/// clamp per clip, so a gain up to 2 is applied as is (the final output stage
+/// clips above full scale).
+pub fn tts_gains(p: &Profile) -> (f32, f32, bool) {
+    let v = tts_volume(p);
+    (
+        p.sb_global_others.unwrap_or(1.0) * v,
+        p.sb_global_self.unwrap_or(1.0) * v,
+        p.sb_global_hear_local,
+    )
+}
+
 /// The 48 kHz frame to seek to for `pos_s` seconds: negative (or non-finite)
 /// → 0, and clamped into `[0, len)` when the clip's length is known.
 pub fn seek_target_frames(pos_s: f64, len_frames: Option<u64>) -> u64 {
@@ -362,9 +393,8 @@ pub fn plan_routed(
 /// (volumes and order don't count). `configure` only tries to attach apps
 /// (a process snapshot) when it does; `tick` retries the rest.
 pub fn routed_names_changed(old: &[RoutedApp], new: &[RoutedApp]) -> bool {
-    let missing_in = |a: &[RoutedApp], b: &[RoutedApp]| {
-        a.iter().any(|x| !b.iter().any(|y| y.name == x.name))
-    };
+    let missing_in =
+        |a: &[RoutedApp], b: &[RoutedApp]| a.iter().any(|x| !b.iter().any(|y| y.name == x.name));
     missing_in(old, new) || missing_in(new, old)
 }
 
@@ -436,6 +466,12 @@ pub fn configure_summary(p: &Profile) -> String {
     )
 }
 
+/// The `mic_open` rule: not muted, and in PTT mode the chain's gate is open
+/// (it publishes that only while audio runs).
+fn mic_open_of(muted: bool, ptt_mode: bool, running: bool, ptt_open: bool) -> bool {
+    !muted && (!ptt_mode || (running && ptt_open))
+}
+
 /// `list_*` calls slower than this are logged.
 const SLOW_LIST: Duration = Duration::from_millis(500);
 
@@ -469,6 +505,25 @@ pub struct Controller {
     /// The mic mute hotkey (low-level hooks; its thread runs only while
     /// `profile.mic_mute_hotkey` is a valid spec).
     mute_hook: MuteHook,
+    /// Soundboard hotkeys on mouse buttons (the mouse hook; its thread runs
+    /// only while some such binding is registered).
+    sound_mouse: MouseSoundHook,
+    /// How the profile's soundboard bindings were last split between
+    /// `global-hotkey` and the mouse hook.
+    plan: BindingPlan,
+    /// Mouse sound bindings that were refused or couldn't be hooked.
+    mouse_errors: Vec<(String, String)>,
+    /// The push-to-talk key (same hooks, hold semantics): publishes "held"
+    /// straight into the engine's `MicParams`. Its thread runs only while
+    /// `profile.ptt_key` is a valid spec that isn't the mute hotkey.
+    ptt_hook: MuteHook,
+    /// Why the PTT key was refused before it reached the hook (it equals the
+    /// mute hotkey): `(ptt_key spec, message)`.
+    ptt_conflict: Option<(String, String)>,
+    /// Consecutive ticks the PTT key read physically up while flagged held.
+    ptt_up_polls: u8,
+    /// The last `mic_open` value reported, to send the event on change only.
+    last_mic_open: bool,
     profile: Profile,
     /// The profile's soundboard sources with their canonical forms, computed
     /// when the sources change (and on `list_clips`), never per play, so an
@@ -482,6 +537,17 @@ pub struct Controller {
     /// soundboard holds the other reference to each `ClipGains`; an entry
     /// whose count drops to 1 has finished and is pruned.
     live: HashMap<u64, (PathBuf, Arc<ClipGains>)>,
+    /// Playing text-to-speech instances and their live gains (the global
+    /// soundboard gains), pruned like `live`. Not seekable.
+    tts_live: HashMap<u64, Arc<ClipGains>>,
+    /// Finished speech waiting for the playing one to leave Now Playing
+    /// (speech never overlaps). Controller-side only; not in `state.playing`
+    /// until it starts.
+    tts_wait: VecDeque<tts::Prepared>,
+    /// Voice families and the synthesis thread.
+    tts: Tts,
+    /// The Piper family: installer and synthesizer (also inside `tts`).
+    piper: Arc<Piper>,
     /// The last `set_audio` asked for audio on.
     audio_wanted: bool,
     /// Why audio isn't running although wanted (a start failed, or a core
@@ -497,16 +563,30 @@ pub struct Controller {
 
 impl Controller {
     pub fn new(hotkeys: HotkeyThread) -> Controller {
+        let engine = Engine::new();
+        let ptt_hook = MuteHook::with_held(engine.params().ptt_held_handle());
+        let piper = Piper::system(piper::default_dir());
         Controller {
-            engine: Engine::new(),
+            engine,
             lock: None,
             hotkeys,
             mute_hook: MuteHook::new(),
+            sound_mouse: MouseSoundHook::new(),
+            plan: BindingPlan::default(),
+            mouse_errors: Vec::new(),
+            ptt_hook,
+            ptt_conflict: None,
+            ptt_up_polls: 0,
+            last_mic_open: true,
             profile: Profile::default(),
             sources: Vec::new(),
             configured: false,
             attached: HashMap::new(),
             live: HashMap::new(),
+            tts_live: HashMap::new(),
+            tts_wait: VecDeque::new(),
+            tts: Tts::system(piper.clone()),
+            piper,
             audio_wanted: false,
             audio_error: None,
             last_audio_attempt: Instant::now(),
@@ -527,6 +607,11 @@ impl Controller {
         let old = std::mem::replace(&mut self.profile, p);
         self.update_live_gains();
 
+        // Entering PTT mode starts closed, even with the key physically held
+        // (done before the chain can see the new mode).
+        if is_ptt_mode(&self.profile) && (!self.configured || !is_ptt_mode(&old)) {
+            self.reset_ptt();
+        }
         apply_profile_dsp(&self.engine.params(), &self.profile);
         if let Some(m) = self.profile.master_volume {
             store_f32(&self.engine.master(), m);
@@ -542,13 +627,19 @@ impl Controller {
         if !self.configured || sources(&self.profile) != sources(&old) {
             self.refresh_sources();
         }
-        let binds = bindings_from_profile(&self.profile);
-        if !self.configured || binds != bindings_from_profile(&old) {
-            self.hotkeys.set(binds);
-        }
+        out.extend(self.apply_sound_bindings());
         if !self.configured || self.profile.mic_mute_hotkey != old.mic_mute_hotkey {
             let spec = self.profile.mic_mute_hotkey.as_deref();
             if let Some((accel, message)) = self.mute_hook.set(spec) {
+                elog::event("hotkey_error", &format!("{accel}: {message}"));
+                out.push(Event::HotkeyError { accel, message });
+            }
+        }
+        if !self.configured
+            || self.profile.ptt_key != old.ptt_key
+            || self.profile.mic_mute_hotkey != old.mic_mute_hotkey
+        {
+            if let Some((accel, message)) = self.set_ptt_key() {
                 elog::event("hotkey_error", &format!("{accel}: {message}"));
                 out.push(Event::HotkeyError { accel, message });
             }
@@ -625,6 +716,124 @@ impl Controller {
         Vec::new()
     }
 
+    /// Every text-to-speech voice. No Windows voices gives an empty list.
+    pub fn list_tts_voices(&self) -> Event {
+        Event::TtsVoices {
+            voices: self.tts.voices(),
+        }
+    }
+
+    /// Queue `text` to be spoken with `voice`. Errors, in order: empty text,
+    /// audio off, unknown voice, queue full. Returns at once: the voice is
+    /// synthesized on the TTS thread and the result is played by `tick`
+    /// (a synthesis failure then becomes an `error` event).
+    pub fn speak(&mut self, text: &str, voice: &str, rate: Option<f64>) -> Vec<Event> {
+        let running = self.engine.is_running();
+        self.speak_with(text, voice, rate, running)
+    }
+
+    fn speak_with(
+        &mut self,
+        text: &str,
+        voice: &str,
+        rate: Option<f64>,
+        audio_on: bool,
+    ) -> Vec<Event> {
+        let error = |message: String| {
+            elog::event("tts_error", &message);
+            vec![Event::Error { message }]
+        };
+        if tts::normalize_text(text).is_none() {
+            return error("Nothing to say".into());
+        }
+        if !audio_on {
+            return error("Audio is off".into());
+        }
+        match self.tts.voice_installed(voice) {
+            Some(true) => {}
+            Some(false) => return error(format!("Voice not installed: {voice}")),
+            None => return error(format!("Unknown voice: {voice}")),
+        }
+        if self.tts.in_flight() + self.tts_wait.len() >= tts::MAX_PENDING {
+            return error("Too many speech requests queued".into());
+        }
+        match self
+            .tts
+            .submit(voice, text, f64::from(tts::clamp_rate(rate)))
+        {
+            Ok(()) => Vec::new(),
+            Err(message) => error(message),
+        }
+    }
+
+    /// Start installing the Piper voice `id` on the installer thread. Errors
+    /// (an unknown id, or an install already running) come back at once; a
+    /// failure while installing arrives later as an `error` event, and a
+    /// finished install as a fresh `tts_voices` event.
+    pub fn install_tts_voice(&mut self, id: &str) -> Vec<Event> {
+        match self.piper.install(id) {
+            Ok(()) => Vec::new(),
+            Err(message) => {
+                elog::event("tts_error", &message);
+                vec![Event::Error { message }]
+            }
+        }
+    }
+
+    /// Queue finished speech (or report why it failed), then start the next
+    /// waiting item if no speech is playing.
+    fn poll_tts(&mut self, out: &mut Vec<Event>) {
+        for result in self.piper.take_results() {
+            match result {
+                Ok(_) => out.push(self.list_tts_voices()),
+                Err(message) => {
+                    elog::event("tts_error", &message);
+                    out.push(Event::Error { message });
+                }
+            }
+        }
+        let running = self.engine.is_running();
+        for done in self.tts.poll() {
+            match done {
+                Done::Ready(p) => {
+                    if running {
+                        self.tts_wait.push_back(p);
+                    } else {
+                        out.push(Event::Error {
+                            message: "Audio is off".into(),
+                        });
+                    }
+                }
+                Done::Failed(message) => {
+                    elog::event("tts_error", &message);
+                    out.push(Event::Error { message });
+                }
+            }
+        }
+        self.advance_tts(running);
+    }
+
+    /// Start the next waiting speech when none is playing (the soundboard
+    /// dropped the previous one: finished or stopped). Speech plays in order,
+    /// one at a time. Audio off drops everything waiting.
+    fn advance_tts(&mut self, running: bool) {
+        self.prune_live();
+        if !running {
+            self.tts_wait.clear();
+            return;
+        }
+        if !self.tts_live.is_empty() {
+            return;
+        }
+        let Some(p) = self.tts_wait.pop_front() else {
+            return;
+        };
+        let (others, me, hear_local) = tts_gains(&self.profile);
+        let gains = Arc::new(ClipGains::new(others, me, hear_local));
+        let id = self.engine.play_buffer(p.name, p.stream, gains.clone());
+        self.tts_live.insert(id, gains);
+    }
+
     /// Play the sound a hotkey names (a path or a legacy file name).
     pub fn play_key(&mut self, key: &SoundKey) -> Vec<Event> {
         let (file, path) = key.args();
@@ -636,6 +845,11 @@ impl Controller {
     /// event. The seek runs on the clip's decoder worker; `state()` shows the
     /// new position within a block or two.
     pub fn seek_clip(&mut self, id: u64, pos_s: f64) -> Vec<Event> {
+        if self.tts_live.contains_key(&id) {
+            return vec![Event::Error {
+                message: "Speech can't be seeked".into(),
+            }];
+        }
         let Some(len_frames) = self.playing_len(id) else {
             elog::event("clip_error", &format!("seek id={id}: {NO_SUCH_PLAYING}"));
             return vec![Event::Error {
@@ -660,6 +874,7 @@ impl Controller {
     }
 
     pub fn stop_all(&mut self) {
+        self.tts_wait.clear();
         self.engine.stop_all_clips();
     }
 
@@ -685,6 +900,154 @@ impl Controller {
         let state = if muted { "on" } else { "off" };
         elog::event("mic_mute", &format!("{state} ({by})"));
         vec![Event::MicMuted { muted, source }]
+    }
+
+    /// Whether the mic is audible: not muted, and (always mode, or the PTT
+    /// gate is open: key held or in the release tail).
+    pub fn mic_open(&self) -> bool {
+        let params = self.engine.params();
+        mic_open_of(
+            params.mic_muted(),
+            params.ptt_mode(),
+            self.engine.is_running(),
+            params.ptt_open(),
+        )
+    }
+
+    /// Split the profile's soundboard bindings between `global-hotkey`
+    /// (keyboard) and the mouse hook, applying whichever part changed. Mouse
+    /// bindings that overlap the mute or PTT key, repeat an earlier one or
+    /// exceed the limit are refused with a `HotkeyError` (reported when the
+    /// mouse part changes, and listed in the state until then).
+    fn apply_sound_bindings(&mut self) -> Vec<Event> {
+        let spec = |s: &Option<String>| {
+            s.as_deref()
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+                .and_then(|k| parse_mute_spec(k).ok())
+        };
+        let mut reserved: Vec<(&str, MuteBinding)> = Vec::new();
+        if let Some(b) = spec(&self.profile.mic_mute_hotkey) {
+            reserved.push(("mute hotkey", b));
+        }
+        if let Some(b) = spec(&self.profile.ptt_key) {
+            reserved.push(("push-to-talk key", b));
+        }
+        let plan = plan_bindings(bindings_from_profile(&self.profile), &reserved);
+        let first = !self.configured;
+        if first || plan.keyboard != self.plan.keyboard {
+            self.hotkeys.set(plan.keyboard.clone());
+        }
+        let mut out = Vec::new();
+        if first || plan.mouse != self.plan.mouse || plan.errors != self.plan.errors {
+            let mut errors = plan.errors.clone();
+            let hooks: Vec<MuteBinding> = plan.mouse.iter().map(|m| m.binding).collect();
+            if let Err(message) = self.sound_mouse.set(&hooks) {
+                errors.extend(
+                    plan.mouse
+                        .iter()
+                        .map(|m| (m.accel.clone(), message.clone())),
+                );
+            }
+            for (accel, message) in &errors {
+                elog::event("hotkey_error", &format!("{accel}: {message}"));
+                out.push(Event::HotkeyError {
+                    accel: accel.clone(),
+                    message: message.clone(),
+                });
+            }
+            self.mouse_errors = errors;
+        }
+        self.plan = plan;
+        out
+    }
+
+    /// Do what a hotkey press asks.
+    fn run_hotkey_action(&mut self, action: HotkeyAction, out: &mut Vec<Event>) {
+        match action {
+            HotkeyAction::Clip(key) => out.extend(self.play_key(&key)),
+            HotkeyAction::StopAll => self.stop_all(),
+        }
+    }
+
+    /// Forget a held PTT key and close the gate: the mic stays closed until a
+    /// fresh key-down, even if the key is physically held right now.
+    fn reset_ptt(&self) {
+        self.ptt_hook.clear_held();
+        self.engine.params().set_ptt_open(false);
+    }
+
+    /// Register (or remove) the PTT key hook for the current profile.
+    /// Returns `(accel, message)` when the key can't be used; the mic then
+    /// stays closed in PTT mode (no fallback to open).
+    fn set_ptt_key(&mut self) -> Option<(String, String)> {
+        self.ptt_conflict = None;
+        let key = self
+            .profile
+            .ptt_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty());
+        let Some(key) = key else {
+            self.ptt_hook.set(None);
+            return None;
+        };
+        let mute = self
+            .profile
+            .mic_mute_hotkey
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty());
+        let same_as_mute = mute.is_some_and(|m| {
+            m.eq_ignore_ascii_case(key)
+                || matches!((parse_mute_spec(m), parse_mute_spec(key)), (Ok(a), Ok(b)) if a == b)
+        });
+        if same_as_mute {
+            self.ptt_hook.set(None);
+            let err = (
+                key.to_string(),
+                format!("push-to-talk key {key:?} is the same as the mute hotkey"),
+            );
+            self.ptt_conflict = Some(err.clone());
+            return Some(err);
+        }
+        self.ptt_hook.set(Some(key)).map(|(accel, message)| {
+            let message = message.replacen("invalid mute hotkey", "invalid push-to-talk key", 1);
+            (accel, message)
+        })
+    }
+
+    /// The PTT key problem to list in `hotkey_errors`, if any.
+    fn ptt_error(&self) -> Option<&(String, String)> {
+        self.ptt_conflict.as_ref().or(self.ptt_hook.error())
+    }
+
+    /// Safety net for a key-up the hook never saw: while the PTT flag says
+    /// held but `probe` reads the key physically up on `PTT_UP_POLLS`
+    /// consecutive ticks, clear the flag so the normal release tail runs and
+    /// the mic closes. Two reads, because inside the hook a fresh press is
+    /// not yet visible to the async key state.
+    fn poll_ptt_physical(&mut self, probe: impl FnOnce(crate::llhooks::Trigger) -> bool) {
+        if self.ptt_hook.held_but_physically_up(probe) {
+            self.ptt_up_polls += 1;
+            if self.ptt_up_polls >= PTT_UP_POLLS {
+                self.ptt_hook.clear_held();
+                self.ptt_up_polls = 0;
+                elog::event("ptt", "key-up missed, released");
+            }
+        } else {
+            self.ptt_up_polls = 0;
+        }
+    }
+
+    /// One `mic_open` event when `mic_open()` changed since the last report.
+    fn sync_mic_open(&mut self, out: &mut Vec<Event>) {
+        let open = self.mic_open();
+        if open != self.last_mic_open {
+            self.last_mic_open = open;
+            elog::event("mic_open", if open { "open" } else { "closed" });
+            out.push(Event::MicOpen { open });
+        }
     }
 
     pub fn list_devices(&self) -> Event {
@@ -755,20 +1118,32 @@ impl Controller {
     pub fn tick(&mut self) -> Vec<Event> {
         let mut out = Vec::new();
         self.prune_live();
+        self.poll_tts(&mut out);
         while let Some(ev) = self.hotkeys.try_recv() {
             match ev {
-                HotkeyEvent::Pressed(HotkeyAction::Clip(key)) => out.extend(self.play_key(&key)),
-                HotkeyEvent::Pressed(HotkeyAction::StopAll) => self.stop_all(),
+                HotkeyEvent::Pressed(action) => self.run_hotkey_action(action, &mut out),
                 HotkeyEvent::Error { accel, message } => {
                     elog::event("hotkey_error", &format!("{accel}: {message}"));
                     out.push(Event::HotkeyError { accel, message })
                 }
             }
         }
+        let mouse_presses = self.sound_mouse.take_presses();
+        for (slot, presses) in mouse_presses.into_iter().enumerate() {
+            let Some(action) = self.plan.mouse.get(slot).map(|m| m.action.clone()) else {
+                continue;
+            };
+            // Each press plays once, like a keyboard press (bounded per tick).
+            for _ in 0..presses.min(MAX_SOUND_PRESSES_PER_TICK) {
+                self.run_hotkey_action(action.clone(), &mut out);
+            }
+        }
         for _ in 0..self.mute_hook.take_presses(MAX_MUTE_PRESSES_PER_TICK) {
             let muted = !self.mic_muted();
             out.extend(self.set_mic_muted(muted, MuteSource::Hotkey));
         }
+        self.poll_ptt_physical(crate::llhooks::physically_down);
+        self.sync_mic_open(&mut out);
         if self.engine.is_running() {
             let status = self.engine.core_stream_status();
             self.apply_core_status(status);
@@ -874,15 +1249,22 @@ impl Controller {
                 .hotkeys
                 .failing()
                 .into_iter()
+                .chain(self.mouse_errors.iter().cloned())
                 .chain(self.mute_hook.error().cloned())
+                .chain(self.ptt_error().cloned())
                 .map(|(accel, message)| HotkeyErrorJson { accel, message })
                 .collect(),
+            tts_install: self
+                .piper
+                .progress()
+                .map(|(id, progress)| TtsInstallJson { id, progress }),
             gate_threshold_live: live_gate_threshold(
                 self.engine.params().gate_auto(),
                 running,
                 self.engine.params().gate_threshold_live(),
             ),
             mic_muted: self.mic_muted(),
+            mic_open: self.mic_open(),
         })
     }
 
@@ -892,7 +1274,11 @@ impl Controller {
         self.audio_wanted = false;
         self.stop_audio("shutdown");
         self.hotkeys.set(Vec::new());
+        let _ = self.sound_mouse.set(&[]);
+        self.plan = BindingPlan::default();
+        self.mouse_errors.clear();
         self.mute_hook.set(None);
+        self.ptt_hook.set(None);
     }
 
     // ---- internals ----
@@ -940,6 +1326,7 @@ impl Controller {
     /// is the last. Exact, unlike the snapshot, which lags a fresh play.
     fn prune_live(&mut self) {
         self.live.retain(|_, (_, g)| Arc::strong_count(g) > 1);
+        self.tts_live.retain(|_, g| Arc::strong_count(g) > 1);
     }
 
     /// Re-resolve every playing instance's gains under the current profile;
@@ -950,6 +1337,10 @@ impl Controller {
             let (others, me, hear_local) = resolve_clip_gains(&self.profile, path);
             gains.set(others, me, hear_local);
         }
+        let (others, me, hear_local) = tts_gains(&self.profile);
+        for gains in self.tts_live.values() {
+            gains.set(others, me, hear_local);
+        }
     }
 
     /// Start audio, recording any failure in `audio_error`.
@@ -957,6 +1348,8 @@ impl Controller {
     /// 2 s retries of the same failure only go to stderr, as before).
     fn start_audio(&mut self) {
         self.last_audio_attempt = Instant::now();
+        // A new chain starts closed in PTT mode, key held or not.
+        self.reset_ptt();
         match self.try_start_audio() {
             Ok(()) => {
                 let p = &self.profile;
@@ -1042,8 +1435,11 @@ impl Controller {
         }
         self.engine.stop();
         self.engine.params().set_input_level(0.0);
+        self.engine.params().set_ptt_open(false);
         self.attached.clear();
         self.live.clear();
+        self.tts_live.clear();
+        self.tts_wait.clear();
         self.lock = None;
     }
 
@@ -1779,8 +2175,14 @@ mod tests {
         let mut quiet = ra("A");
         quiet.volume = 0.2;
         // A volume drag (or a reorder) isn't a change of the routed apps.
-        assert!(!routed_names_changed(&[ra("A"), ra("B")], &[quiet, ra("B")]));
-        assert!(!routed_names_changed(&[ra("A"), ra("B")], &[ra("B"), ra("A")]));
+        assert!(!routed_names_changed(
+            &[ra("A"), ra("B")],
+            &[quiet, ra("B")]
+        ));
+        assert!(!routed_names_changed(
+            &[ra("A"), ra("B")],
+            &[ra("B"), ra("A")]
+        ));
         assert!(!routed_names_changed(&[], &[]));
         // Added, removed or swapped names are.
         assert!(routed_names_changed(&[ra("A")], &[ra("A"), ra("B")]));
@@ -1987,6 +2389,256 @@ mod tests {
         assert!(!state_of(&c).mic_muted);
     }
 
+    // ---- soundboard hotkeys on mouse buttons (hooks never installed in tests) ----
+
+    const MOUSE_CLIP: &str = r"C:\o2i-test-nowhere\a.mp3";
+
+    fn sound_profile(hotkeys: &[(&str, &str)], mute: Option<&str>, ptt: Option<&str>) -> Profile {
+        Profile {
+            sb_clip_hotkeys: hotkeys
+                .iter()
+                .map(|(k, a)| (k.to_string(), a.to_string()))
+                .collect(),
+            mic_mute_hotkey: mute.map(str::to_string),
+            ptt_key: ptt.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    /// Errors in `evs` (a press of an unplayable clip reports one: audio is
+    /// off in tests, which also proves the press reached `play_clip`).
+    fn error_count(evs: &[Event]) -> usize {
+        evs.iter()
+            .filter(|e| matches!(e, Event::Error { .. }))
+            .count()
+    }
+
+    fn mouse_trigger(b: crate::llhooks::MouseButton) -> crate::llhooks::Trigger {
+        crate::llhooks::Trigger::Mouse(b)
+    }
+
+    fn x1() -> crate::llhooks::Trigger {
+        mouse_trigger(crate::llhooks::MouseButton::X1)
+    }
+
+    #[test]
+    fn sound_hotkey_mouse4_plays_clip() {
+        let mut c = Controller::new(HotkeyThread::spawn());
+        let evs = c.configure(sound_profile(&[(MOUSE_CLIP, "Mouse4")], None, None));
+        assert!(evs.is_empty(), "{evs:?}");
+        assert!(c.sound_mouse.running(), "the mouse hook serves it");
+        assert!(state_of(&c).hotkey_errors.is_empty());
+
+        // Another button does nothing; a button-up does nothing.
+        c.sound_mouse
+            .simulate_event(mouse_trigger(crate::llhooks::MouseButton::X2), true, 0);
+        c.sound_mouse.simulate_event(x1(), false, 0);
+        assert_eq!(error_count(&c.tick()), 0);
+
+        // Each press plays once (here: tries to, and audio is off).
+        c.sound_mouse.simulate_event(x1(), true, 0);
+        assert_eq!(error_count(&c.tick()), 1);
+        c.sound_mouse.simulate_event(x1(), true, 0);
+        c.sound_mouse.simulate_event(x1(), true, 0);
+        assert_eq!(error_count(&c.tick()), 2);
+        assert_eq!(error_count(&c.tick()), 0, "presses are taken once");
+
+        // Clearing the hotkey removes the hook.
+        c.configure(Profile::default());
+        assert!(!c.sound_mouse.running());
+        c.shutdown();
+    }
+
+    #[test]
+    fn sound_hotkey_mouse_with_modifier() {
+        use crate::llhooks::{MouseButton, MOD_ALT, MOD_CTRL, MOD_SHIFT};
+        let mut c = Controller::new(HotkeyThread::spawn());
+        c.configure(sound_profile(
+            &[(MOUSE_CLIP, "Ctrl+Mouse4"), ("b.mp3", "Mouse3")],
+            None,
+            None,
+        ));
+        assert!(c.sound_mouse.running());
+        let fired = |c: &mut Controller, t, mods| {
+            c.sound_mouse.simulate_event(t, true, mods);
+            error_count(&c.tick())
+        };
+        // A combo needs exactly its modifiers.
+        assert_eq!(fired(&mut c, x1(), 0), 0);
+        assert_eq!(fired(&mut c, x1(), MOD_CTRL | MOD_SHIFT), 0);
+        assert_eq!(fired(&mut c, x1(), MOD_ALT), 0);
+        assert_eq!(fired(&mut c, x1(), MOD_CTRL), 1);
+        // A bare binding fires whatever is held.
+        let mid = mouse_trigger(MouseButton::Middle);
+        assert_eq!(fired(&mut c, mid, 0), 1);
+        assert_eq!(fired(&mut c, mid, MOD_CTRL | MOD_ALT), 1);
+        c.shutdown();
+    }
+
+    #[test]
+    fn sound_hotkey_mouse_conflicts_with_mute_is_error() {
+        let mut c = Controller::new(HotkeyThread::spawn());
+        let evs = c.configure(sound_profile(
+            &[(MOUSE_CLIP, "Mouse4")],
+            Some("Mouse4"),
+            None,
+        ));
+        match evs.as_slice() {
+            [Event::HotkeyError { accel, message }] => {
+                assert_eq!(accel, "Mouse4", "the sound hotkey is reported");
+                assert!(message.contains("mute"), "{message}");
+            }
+            other => panic!("expected one hotkey_error, got {other:?}"),
+        }
+        assert!(
+            !c.sound_mouse.running(),
+            "the sound hotkey is not registered"
+        );
+        assert_eq!(c.mute_hook.running(), Some("mouse"), "mute keeps working");
+        assert_eq!(state_of(&c).hotkey_errors.len(), 1);
+
+        // A bare key overlaps any combo on the same button, either way round.
+        let evs = c.configure(sound_profile(
+            &[(MOUSE_CLIP, "Ctrl+Mouse4")],
+            Some("Mouse4"),
+            None,
+        ));
+        assert!(
+            matches!(evs.as_slice(), [Event::HotkeyError { accel, .. }] if accel == "Ctrl+Mouse4")
+        );
+        let evs = c.configure(sound_profile(
+            &[(MOUSE_CLIP, "Mouse4")],
+            Some("Ctrl+Mouse4"),
+            None,
+        ));
+        assert!(matches!(evs.as_slice(), [Event::HotkeyError { accel, .. }] if accel == "Mouse4"));
+        assert!(!c.sound_mouse.running());
+
+        // The PTT key counts too.
+        let evs = c.configure(sound_profile(
+            &[(MOUSE_CLIP, "Mouse5")],
+            None,
+            Some("mouse5"),
+        ));
+        match evs.as_slice() {
+            [Event::HotkeyError { accel, message }] => {
+                assert_eq!(accel, "Mouse5");
+                assert!(message.contains("push-to-talk"), "{message}");
+            }
+            other => panic!("expected one hotkey_error, got {other:?}"),
+        }
+        assert_eq!(c.ptt_hook.running(), Some("mouse"), "PTT keeps working");
+
+        // Different modifiers do not overlap; changing the mute key frees it.
+        let evs = c.configure(sound_profile(
+            &[(MOUSE_CLIP, "Shift+Mouse4")],
+            Some("Ctrl+Mouse4"),
+            None,
+        ));
+        assert!(evs.is_empty(), "{evs:?}");
+        assert!(c.sound_mouse.running());
+        let evs = c.configure(sound_profile(
+            &[(MOUSE_CLIP, "Mouse4")],
+            Some("Mouse4"),
+            None,
+        ));
+        assert_eq!(evs.len(), 1);
+        assert!(!c.sound_mouse.running());
+        let evs = c.configure(sound_profile(
+            &[(MOUSE_CLIP, "Mouse4")],
+            Some("Mouse5"),
+            None,
+        ));
+        assert!(evs.is_empty(), "{evs:?}");
+        assert!(c.sound_mouse.running());
+        assert!(state_of(&c).hotkey_errors.is_empty());
+        c.shutdown();
+    }
+
+    #[test]
+    fn keyboard_sound_hotkeys_unchanged() {
+        let mut c = Controller::new(HotkeyThread::spawn());
+        let p = sound_profile(
+            &[(MOUSE_CLIP, "F23"), ("b.mp3", "Ctrl+Alt+Shift+F22")],
+            None,
+            None,
+        );
+        let evs = c.configure(p.clone());
+        assert!(evs.is_empty(), "{evs:?}");
+        assert!(
+            !c.sound_mouse.running(),
+            "no mouse hook for keyboard hotkeys"
+        );
+        assert_eq!(c.plan.keyboard, bindings_from_profile(&p));
+        assert!(c.plan.mouse.is_empty());
+
+        // An unknown name still goes down the keyboard path and its error.
+        let evs = c.configure(sound_profile(&[(MOUSE_CLIP, "Mouse9")], None, None));
+        assert!(
+            evs.is_empty(),
+            "the hotkey thread reports it later: {evs:?}"
+        );
+        assert!(!c.sound_mouse.running());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut errs = state_of(&c).hotkey_errors;
+        while errs.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            errs = state_of(&c).hotkey_errors;
+        }
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].accel, "Mouse9");
+        assert!(errs[0].message.contains("invalid accelerator"));
+        c.shutdown();
+    }
+
+    #[test]
+    fn mouse_sound_hotkeys_duplicates_and_limit() {
+        let mut c = Controller::new(HotkeyThread::spawn());
+        let evs = c.configure(sound_profile(
+            &[
+                ("a.mp3", "Mouse4"),
+                ("b.mp3", "Mouse4"),
+                ("c.mp3", "mouse5"),
+            ],
+            None,
+            None,
+        ));
+        match evs.as_slice() {
+            [Event::HotkeyError { accel, message }] => {
+                assert_eq!(accel, "Mouse4");
+                assert!(message.contains("already bound"), "{message}");
+            }
+            other => panic!("expected one hotkey_error, got {other:?}"),
+        }
+        assert_eq!(c.plan.mouse.len(), 2, "the first one stays registered");
+        assert_eq!(c.plan.mouse[0].action, HotkeyAction::Clip("a.mp3".into()));
+
+        // 16 fit; more are refused. 3 buttons x 8 modifier sets = 24 distinct.
+        let mut specs = Vec::new();
+        for m in [
+            "",
+            "Ctrl+",
+            "Alt+",
+            "Shift+",
+            "Ctrl+Alt+",
+            "Ctrl+Shift+",
+            "Alt+Shift+",
+            "Win+",
+        ] {
+            for b in ["Mouse3", "Mouse4", "Mouse5"] {
+                specs.push(format!("{m}{b}"));
+            }
+        }
+        let hotkeys: Vec<(&str, &str)> = specs.iter().map(|s| ("a.mp3", s.as_str())).collect();
+        let evs = c.configure(sound_profile(&hotkeys, None, None));
+        assert_eq!(c.plan.mouse.len(), 16);
+        assert_eq!(evs.len(), 24 - 16);
+        assert!(
+            matches!(&evs[0], Event::HotkeyError { message, .. } if message == "Too many mouse hotkeys")
+        );
+        c.shutdown();
+    }
+
     // ---- mute hotkey (tests never install real hooks: see `MuteHook::new`) ----
 
     /// The `mic_muted` events in `evs`, in order (other events are skipped).
@@ -2091,6 +2743,208 @@ mod tests {
         c.shutdown();
         assert_eq!(c.mute_hook.running(), None, "shutdown removes the hook");
         assert!(state_of(&c).hotkey_errors.is_empty());
+    }
+
+    // ---- push-to-talk (hooks never installed in tests, see `MuteHook::new`) ----
+
+    fn ptt_profile(mode: Option<&str>, key: Option<&str>, mute: Option<&str>) -> Profile {
+        Profile {
+            mic_mode: mode.map(str::to_string),
+            ptt_key: key.map(str::to_string),
+            mic_mute_hotkey: mute.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    /// The `mic_open` events in `evs`, in order.
+    fn mic_open_events(evs: &[Event]) -> Vec<bool> {
+        evs.iter()
+            .filter_map(|e| match e {
+                Event::MicOpen { open } => Some(*open),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mic_open_event_on_change() {
+        let mut c = Controller::new(HotkeyThread::spawn());
+        c.configure(Profile::default());
+        assert!(state_of(&c).mic_open, "always mode, unmuted");
+        assert!(mic_open_events(&c.tick()).is_empty(), "no change, no event");
+
+        // Mute closes it (the mic_muted event is separate).
+        c.set_mic_muted(true, MuteSource::Command);
+        assert!(!state_of(&c).mic_open);
+        assert_eq!(mic_open_events(&c.tick()), vec![false]);
+        assert!(mic_open_events(&c.tick()).is_empty(), "once per change");
+        c.set_mic_muted(false, MuteSource::Command);
+        assert_eq!(mic_open_events(&c.tick()), vec![true]);
+
+        // Switching into PTT closes it; the chain opening it (key held or
+        // tail, published through the params) opens it.
+        c.configure(ptt_profile(Some("ptt"), Some("Mouse5"), None));
+        assert_eq!(mic_open_events(&c.tick()), vec![false]);
+        assert!(!state_of(&c).mic_open);
+        c.engine.params().set_ptt_open(true);
+        // Audio is not running in tests: a stale flag must not count.
+        assert!(!state_of(&c).mic_open, "PTT is closed while audio is off");
+        assert!(mic_open_events(&c.tick()).is_empty());
+    }
+
+    #[test]
+    fn mic_open_follows_ptt_gate_while_running() {
+        // `ptt_open` is what the chain publishes; the controller trusts it only
+        // while the engine runs. Drive the pure rule directly.
+        assert!(mic_open_of(false, false, false, false), "always, unmuted");
+        assert!(!mic_open_of(true, false, false, false), "always, muted");
+        assert!(!mic_open_of(false, true, false, true), "PTT, audio off");
+        assert!(mic_open_of(false, true, true, true), "PTT, gate open");
+        assert!(!mic_open_of(false, true, true, false), "PTT, gate closed");
+        assert!(!mic_open_of(true, true, true, true), "mute overrides PTT");
+    }
+
+    #[test]
+    fn ptt_mode_starts_closed() {
+        let mut c = Controller::new(HotkeyThread::spawn());
+        // Fresh engine configured straight into PTT: the key reads released
+        // even if the hook had it held before.
+        c.ptt_hook.simulate_held(true);
+        c.engine.params().set_ptt_open(true);
+        c.configure(ptt_profile(Some("ptt"), Some("Mouse5"), None));
+        assert!(!c.engine.params().ptt_held(), "start closed");
+        assert!(!c.engine.params().ptt_open());
+        assert!(!state_of(&c).mic_open);
+
+        // A held key stays held while in PTT mode ...
+        c.ptt_hook.simulate_held(true);
+        assert!(c.engine.params().ptt_held());
+        // ... unconfiguring other things does not clear it ...
+        c.configure(Profile {
+            gate_enabled: true,
+            ..ptt_profile(Some("ptt"), Some("Mouse5"), None)
+        });
+        assert!(c.engine.params().ptt_held());
+        // ... but an audio restart does (fail closed until a fresh press).
+        c.engine.params().set_ptt_open(true);
+        c.start_audio(); // no microphone selected: fails, which is fine here
+        assert!(!c.engine.params().ptt_held(), "closed after restart");
+        assert!(!c.engine.params().ptt_open());
+
+        // Always -> PTT switch clears it as well.
+        c.configure(Profile::default());
+        assert!(!c.engine.params().ptt_mode());
+        c.ptt_hook.simulate_held(true);
+        c.configure(ptt_profile(Some("ptt"), Some("Mouse5"), None));
+        assert!(c.engine.params().ptt_mode());
+        assert!(!c.engine.params().ptt_held(), "closed after a mode switch");
+    }
+
+    #[test]
+    fn ptt_lost_keyup_released_by_physical_poll() {
+        use crate::llhooks::{MouseButton, Trigger};
+        let mut c = Controller::new(HotkeyThread::spawn());
+        c.configure(ptt_profile(Some("ptt"), Some("Mouse5"), None));
+        let params = c.engine.params();
+        // Key-down seen, key-up lost: flag held, gate open.
+        c.ptt_hook.simulate_held(true);
+        // The probe sees the bound button and reports it still down: kept.
+        let mut seen = None;
+        c.poll_ptt_physical(|t| {
+            seen = Some(t);
+            true
+        });
+        assert_eq!(seen, Some(Trigger::Mouse(MouseButton::X2)));
+        assert!(params.ptt_held());
+        // Physically up: one read is not enough, two clear it.
+        c.poll_ptt_physical(|_| false);
+        assert!(params.ptt_held(), "one up read could be a fresh press");
+        c.poll_ptt_physical(|_| true);
+        c.poll_ptt_physical(|_| false);
+        assert!(params.ptt_held(), "a down read resets the count");
+        c.poll_ptt_physical(|_| false);
+        assert!(!params.ptt_held(), "released");
+        // The chain then runs the normal tail and closes.
+        let mut chain = crate::dsp::MicChain::new(params.clone());
+        params.set_ptt_held(true);
+        let mut out = Vec::new();
+        let tone = vec![0.5f32; 480];
+        chain.process(&tone, &mut out);
+        assert!(params.ptt_open());
+        params.set_ptt_held(false);
+        for _ in 0..30 {
+            chain.process(&tone, &mut out);
+        }
+        assert!(!params.ptt_open(), "closed after the tail");
+        // Not held: the probe is not even asked.
+        c.poll_ptt_physical(|_| panic!("probe asked while released"));
+    }
+
+    #[test]
+    fn ptt_key_same_as_mute_key_is_error() {
+        let mut c = Controller::new(HotkeyThread::spawn());
+        let evs = c.configure(ptt_profile(Some("ptt"), Some("mouse4"), Some("Mouse4")));
+        match evs.as_slice() {
+            [Event::HotkeyError { accel, message }] => {
+                assert_eq!(accel, "mouse4", "the PTT key is the one reported");
+                assert!(message.contains("mute"), "{message}");
+            }
+            other => panic!("expected one hotkey_error, got {other:?}"),
+        }
+        assert_eq!(
+            c.ptt_hook.running(),
+            None,
+            "the PTT binding is not registered"
+        );
+        assert_eq!(c.mute_hook.running(), Some("mouse"), "mute keeps working");
+        let errs = state_of(&c).hotkey_errors;
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].accel, "mouse4");
+        assert!(!state_of(&c).mic_open, "PTT with no key stays closed");
+
+        // The same key in a different spelling is the same key.
+        let evs = c.configure(ptt_profile(
+            Some("ptt"),
+            Some("Shift+Ctrl+M"),
+            Some("ctrl+shift+m"),
+        ));
+        assert!(
+            matches!(evs.as_slice(), [Event::HotkeyError { accel, .. }] if accel == "Shift+Ctrl+M"),
+            "{evs:?}"
+        );
+        assert_eq!(c.ptt_hook.running(), None);
+
+        // Changing either one clears the conflict and registers the PTT key.
+        let evs = c.configure(ptt_profile(Some("ptt"), Some("Mouse4"), Some("Mouse5")));
+        assert!(evs.is_empty(), "{evs:?}");
+        assert_eq!(c.ptt_hook.running(), Some("mouse"));
+        assert!(state_of(&c).hotkey_errors.is_empty());
+    }
+
+    #[test]
+    fn ptt_key_parse_error_listed_and_mic_stays_closed() {
+        let mut c = Controller::new(HotkeyThread::spawn());
+        let evs = c.configure(ptt_profile(Some("ptt"), Some("Ctrl+"), None));
+        match evs.as_slice() {
+            [Event::HotkeyError { accel, message }] => {
+                assert_eq!(accel, "Ctrl+");
+                assert!(message.contains("push-to-talk"), "{message}");
+            }
+            other => panic!("expected one hotkey_error, got {other:?}"),
+        }
+        assert_eq!(c.ptt_hook.running(), None);
+        assert!(!state_of(&c).mic_open, "no fallback to open");
+        assert_eq!(state_of(&c).hotkey_errors[0].accel, "Ctrl+");
+        // A null key in PTT mode: no error, still closed.
+        let evs = c.configure(ptt_profile(Some("ptt"), None, None));
+        assert!(evs.is_empty());
+        assert!(!state_of(&c).mic_open);
+        assert!(state_of(&c).hotkey_errors.is_empty());
+        // A valid key registers a hook.
+        c.configure(ptt_profile(Some("ptt"), Some("F8"), None));
+        assert_eq!(c.ptt_hook.running(), Some("keyboard"));
+        c.shutdown();
+        assert_eq!(c.ptt_hook.running(), None, "shutdown removes the hook");
     }
 
     #[test]
@@ -2367,6 +3221,279 @@ mod tests {
             ("a.mp3".to_string(), Some(r"C:\snd\a.mp3".to_string()))
         );
         assert_eq!(label_name_path("a.mp3"), ("a.mp3".to_string(), None));
+    }
+
+    struct MockVoices;
+    impl tts::Synth for MockVoices {
+        fn prefix(&self) -> &'static str {
+            "mock:"
+        }
+        fn voices(&self) -> Vec<tts::Voice> {
+            vec![tts::Voice {
+                id: "mock:a".into(),
+                name: "A".into(),
+                source: "windows",
+                installed: true,
+                size_mb: None,
+            }]
+        }
+        fn synthesize(&self, _: &str, _: &str, _: f32) -> Result<tts::Audio, String> {
+            Err("mock failure".into())
+        }
+    }
+
+    fn speak_controller() -> Controller {
+        let mut c = Controller::new(HotkeyThread::spawn());
+        c.tts = Tts::new(vec![Arc::new(MockVoices)]);
+        c
+    }
+
+    #[test]
+    fn speak_empty_text_errors() {
+        let mut c = speak_controller();
+        // Empty text is reported first, even with audio off and a bad voice.
+        assert_eq!(
+            single_error(&c.speak("  \n ", "nope", None)),
+            "Nothing to say"
+        );
+        assert_eq!(
+            single_error(&c.speak_with("", "mock:a", None, true)),
+            "Nothing to say"
+        );
+    }
+
+    #[test]
+    fn speak_audio_off_errors() {
+        let mut c = speak_controller();
+        assert_eq!(single_error(&c.speak("hi", "mock:a", None)), "Audio is off");
+        // Audio off beats an unknown voice.
+        assert_eq!(single_error(&c.speak("hi", "nope", None)), "Audio is off");
+    }
+
+    #[test]
+    fn speak_unknown_voice_errors() {
+        let mut c = speak_controller();
+        assert_eq!(
+            single_error(&c.speak_with("hi", "win:missing", None, true)),
+            "Unknown voice: win:missing"
+        );
+        assert_eq!(
+            single_error(&c.speak_with("hi", "mock:b", None, true)),
+            "Unknown voice: mock:b"
+        );
+        // Nothing was queued, so nothing comes back.
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(c.tick().is_empty());
+    }
+
+    #[test]
+    fn speak_synthesis_failure_becomes_error_event() {
+        let mut c = speak_controller();
+        assert!(c.speak_with("hi", "mock:a", None, true).is_empty());
+        let end = Instant::now() + Duration::from_secs(10);
+        let msg = loop {
+            let evs = c.tick();
+            if !evs.is_empty() {
+                break single_error(&evs);
+            }
+            assert!(Instant::now() < end, "no error event");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(msg, "mock failure");
+        assert!(c.tts_live.is_empty());
+    }
+
+    fn waiting(name: &str) -> tts::Prepared {
+        tts::Prepared {
+            name: name.into(),
+            stream: crate::soundboard::ClipStream::from_buffer(vec![0.0; 4]),
+        }
+    }
+
+    #[test]
+    fn tts_speaks_play_in_order() {
+        let mut c = speak_controller();
+        // One speech is playing (the test holds the soundboard's reference).
+        let holder = Arc::new(ClipGains::new(1.0, 1.0, false));
+        c.tts_live.insert(1, holder.clone());
+        c.tts_wait.push_back(waiting("TTS: second"));
+        c.tts_wait.push_back(waiting("TTS: third"));
+        c.advance_tts(true);
+        assert_eq!(c.tts_wait.len(), 2, "must wait while the first plays");
+        // The first finishes: only the next one starts, not both.
+        drop(holder);
+        c.advance_tts(true);
+        assert_eq!(c.tts_wait.len(), 1);
+        assert_eq!(c.tts_live.len(), 1);
+        assert_eq!(c.tts_wait[0].name, "TTS: third");
+    }
+
+    #[test]
+    fn tts_stop_starts_next() {
+        let mut c = speak_controller();
+        let holder = Arc::new(ClipGains::new(1.0, 1.0, false));
+        c.tts_live.insert(7, holder.clone());
+        c.tts_wait.push_back(waiting("TTS: next"));
+        c.stop_clip(7);
+        // The soundboard drops the stopped item.
+        drop(holder);
+        c.advance_tts(true);
+        assert!(c.tts_wait.is_empty());
+        assert_eq!(c.tts_live.len(), 1);
+        assert!(!c.tts_live.contains_key(&7));
+    }
+
+    #[test]
+    fn stop_audio_drops_waiting_tts() {
+        let mut c = speak_controller();
+        c.tts_live
+            .insert(1, Arc::new(ClipGains::new(1.0, 1.0, false)));
+        c.tts_wait.push_back(waiting("TTS: a"));
+        c.tts_wait.push_back(waiting("TTS: b"));
+        c.stop_audio("test");
+        assert!(c.tts_wait.is_empty());
+        assert!(c.tts_live.is_empty());
+        // And with audio off nothing starts.
+        c.tts_wait.push_back(waiting("TTS: c"));
+        c.advance_tts(false);
+        assert!(c.tts_wait.is_empty());
+    }
+
+    #[test]
+    fn speak_limit_counts_waiting_speech() {
+        let mut c = speak_controller();
+        // Finished speech waiting to play counts toward the limit of 8.
+        for i in 0..8 {
+            c.tts_wait.push_back(waiting(&format!("TTS: {i}")));
+        }
+        assert_eq!(
+            single_error(&c.speak_with("hi", "mock:a", None, true)),
+            "Too many speech requests queued"
+        );
+        c.tts_wait.pop_front();
+        assert!(c.speak_with("hi", "mock:a", None, true).is_empty());
+        // Requests still being synthesized count too (nothing polled yet).
+        c.tts_wait.clear();
+        c.tts_wait.push_back(waiting("TTS: a"));
+        for _ in 0..6 {
+            assert!(c.speak_with("hi", "mock:a", None, true).is_empty());
+        }
+        assert_eq!(
+            single_error(&c.speak_with("hi", "mock:a", None, true)),
+            "Too many speech requests queued"
+        );
+    }
+
+    #[test]
+    fn install_tts_voice_rejects_unknown_ids() {
+        let mut c = speak_controller();
+        assert_eq!(
+            single_error(&c.install_tts_voice("piper:nope")),
+            "Unknown voice: piper:nope"
+        );
+        assert_eq!(
+            single_error(&c.install_tts_voice("win:x")),
+            "Unknown voice: win:x"
+        );
+        assert!(state_of(&c).tts_install.is_none());
+    }
+
+    #[test]
+    fn speak_uninstalled_piper_voice_errors() {
+        let mut c = speak_controller();
+        let dir = std::env::temp_dir().join(format!("o2i-ctl-piper-{}", std::process::id()));
+        c.piper = tts::piper::Piper::system(dir.clone());
+        c.tts = Tts::new(vec![c.piper.clone()]);
+        let id = tts::piper::Catalogue::official().voices[0].id();
+        assert_eq!(
+            single_error(&c.speak_with("hi", &id, None, true)),
+            format!("Voice not installed: {id}")
+        );
+        assert_eq!(
+            single_error(&c.speak_with("hi", "piper:nope", None, true)),
+            "Unknown voice: piper:nope"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tts_uses_global_gains_and_is_not_seekable() {
+        let p = Profile {
+            sb_global_others: Some(0.3),
+            sb_global_self: Some(0.7),
+            sb_global_hear_local: true,
+            ..Default::default()
+        };
+        assert_eq!(tts_gains(&p), (0.3, 0.7, true));
+        assert_eq!(tts_gains(&Profile::default()), (1.0, 1.0, false));
+        let mut c = speak_controller();
+        let g = Arc::new(ClipGains::new(1.0, 1.0, false));
+        c.tts_live.insert(5, g.clone());
+        c.configure(p);
+        assert_eq!(g.load(), (0.3, 0.7, true));
+        assert_eq!(single_error(&c.seek_clip(5, 1.0)), "Speech can't be seeked");
+    }
+
+    #[test]
+    fn tts_volume_scales_speech_only() {
+        let p = Profile {
+            sb_global_others: Some(0.5),
+            sb_global_self: Some(0.8),
+            sb_global_hear_local: true,
+            tts_volume: Some(1.5),
+            ..Default::default()
+        };
+        assert_eq!(tts_gains(&p), (0.75, 1.2000001, true));
+        // Clips are untouched, override or not.
+        let q = Profile {
+            sb_global_override: true,
+            ..p.clone()
+        };
+        assert_eq!(
+            resolve_clip_gains(&q, Path::new(r"C:.mp3")),
+            (0.5, 0.8, true)
+        );
+        // Live: playing speech follows a change at once.
+        let mut c = speak_controller();
+        let g = Arc::new(ClipGains::new(1.0, 1.0, false));
+        c.tts_live.insert(5, g.clone());
+        c.configure(p.clone());
+        assert_eq!(g.load(), (0.75, 1.2000001, true));
+        c.configure(Profile {
+            tts_volume: Some(0.5),
+            ..p
+        });
+        assert_eq!(g.load(), (0.25, 0.4, true));
+    }
+
+    #[test]
+    fn tts_volume_null_is_one() {
+        assert_eq!(tts_gains(&Profile::default()), (1.0, 1.0, false));
+        let p: Profile = serde_json::from_str(r#"{"tts_volume":null}"#).unwrap();
+        assert_eq!(p.tts_volume, None);
+        assert_eq!(tts_volume(&p), 1.0);
+        let p: Profile = serde_json::from_str("{}").unwrap();
+        assert_eq!(tts_volume(&p), 1.0);
+    }
+
+    #[test]
+    fn tts_volume_clamped() {
+        let v = |x: f32| {
+            tts_volume(&Profile {
+                tts_volume: Some(x),
+                ..Default::default()
+            })
+        };
+        assert_eq!(v(5.0), 2.0);
+        assert_eq!(v(-1.0), 0.0);
+        assert_eq!(v(0.0), 0.0);
+        assert_eq!(v(f32::NAN), 1.0);
+        assert_eq!(v(f32::INFINITY), 1.0);
+        let big = Profile {
+            tts_volume: Some(9.0),
+            ..Default::default()
+        };
+        assert_eq!(tts_gains(&big), (2.0, 2.0, false));
     }
 
     #[test]
@@ -2693,13 +3820,19 @@ mod tests {
             s
         );
         let empty = configure_summary(&Profile::default());
-        assert!(empty.contains("input=none") && empty.contains("routed=none"), "{empty}");
+        assert!(
+            empty.contains("input=none") && empty.contains("routed=none"),
+            "{empty}"
+        );
         assert!(empty.contains("mute_hotkey=none"), "{empty}");
     }
 
     #[test]
     fn slow_list_detail_only_past_threshold() {
-        assert_eq!(slow_list_detail("list_devices", Duration::from_millis(500), "3 inputs"), None);
+        assert_eq!(
+            slow_list_detail("list_devices", Duration::from_millis(500), "3 inputs"),
+            None
+        );
         assert_eq!(
             slow_list_detail("list_apps", Duration::from_millis(812), "14 apps").as_deref(),
             Some("list_apps took 812 ms (14 apps)")
