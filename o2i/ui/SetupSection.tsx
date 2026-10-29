@@ -7,8 +7,9 @@
 import { Button } from "@components/Button";
 import { Heading } from "@components/Heading";
 import { Link } from "@components/Link";
+import { Paragraph } from "@components/Paragraph";
 import { classNameFactory } from "@utils/css";
-import { Select, Text, TextInput, useEffect, useState } from "@webpack/common";
+import { Select, TextInput, useEffect, useState } from "@webpack/common";
 import type { MouseEvent } from "react";
 
 import { useLogExport } from "../diagnostics";
@@ -87,11 +88,11 @@ function openEngineDownload(e: MouseEvent<HTMLAnchorElement>) {
 function PowerRow({ on }: { on: boolean; }) {
     return (
         <div className={cl("power-row")}>
-            <Text variant="text-md/normal">
+            <Paragraph size="md">
                 {on
                     ? "o2i is on. The engine runs while Discord is open."
                     : "o2i is off. The engine, its hotkeys and the soundboard are stopped, and Discord uses your real mic."}
-            </Text>
+            </Paragraph>
             <Button size="small" variant={on ? "secondary" : "primary"} onClick={() => setPowered(!on)}>
                 {on ? "Turn off" : "Turn on"}
             </Button>
@@ -105,13 +106,13 @@ function LogsSection() {
     return (
         <div>
             <Heading tag="h5">Logs</Heading>
-            <Text variant="text-sm/normal" className={cl("setup-text")}>
+            <Paragraph size="sm" className={cl("setup-text")}>
                 Something not working? Export the logs and attach the zip to a GitHub issue, or send it to whoever
                 is helping you. The zip has o2i's engine and plugin logs plus a short summary: versions, your o2i
                 settings, and your soundboard folder and file names. Audio device names and the names of the apps you
                 route are left as they are. Your Windows user folder becomes %USERPROFILE%, and your user name becomes
                 &lt;user&gt; wherever it shows up as a whole word. Nothing from other plugins is included.
-            </Text>
+            </Paragraph>
             <Button variant="secondary" disabled={busy} onClick={start}>{busy ? "Exporting…" : "Export logs"}</Button>
         </div>
     );
@@ -175,18 +176,18 @@ export function SetupSection() {
                     onChange={(v: string) => { settings.store.enginePath = v; }}
                     error={pathOk === false ? "File not found" : undefined}
                 />
-                <Text variant="text-sm/normal" className={cl("setup-hint")}>
+                <Paragraph size="sm" className={cl("setup-hint")}>
                     {pathOk === true ? "\u2713 Found. " : ""}
                     <Link href={ENGINE_DOWNLOAD_URL} onClick={openEngineDownload}>Download o2i.exe</Link> from the latest
                     release, or build it yourself with `cargo build --release` (needs Rust and LLVM).
-                </Text>
+                </Paragraph>
             </div>
 
             <div className={cl("setup-devices")}>
                 {noDevices && (
-                    <Text variant="text-sm/normal">
+                    <Paragraph size="sm">
                         {on ? "The engine isn't running yet, so there are no devices to list." : "o2i is off. Turn it on above to see your devices."}
-                    </Text>
+                    </Paragraph>
                 )}
                 {/* No "System default": the engine needs a named mic, and so does the fallback to it. */}
                 <DeviceSelect
@@ -205,7 +206,7 @@ export function SetupSection() {
                     onPick={id => updateProfile(p => ({ ...p, output_id: id }))}
                 />
                 {devices && !devices.cable && (
-                    <Text variant="text-sm/normal">VB-CABLE isn't installed.</Text>
+                    <Paragraph size="sm">VB-CABLE isn't installed.</Paragraph>
                 )}
                 <DeviceSelect
                     label="Headphones (hear sounds locally)"

@@ -4,9 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { Paragraph } from "@components/Paragraph";
 import { Guild, GuildMember } from "@vencord/discord-types";
 import { findByCodeLazy } from "@webpack";
-import { ChannelStore, FluxDispatcher, GuildMemberStore, GuildRoleStore, IconUtils, openUserProfileModal, ScrollerThin, SelectedChannelStore, Text, useEffect, UserStore, UserUtils, useState, useStateFromStores } from "@webpack/common";
+import { ChannelStore, FluxDispatcher, GuildMemberStore, GuildRoleStore, IconUtils, openUserProfileModal, ScrollerThin, SelectedChannelStore, useEffect, UserStore, UserUtils, useState, useStateFromStores } from "@webpack/common";
 
 import { ProfileIcon } from "./icons";
 import type { PermFilter } from "./modal";
@@ -139,7 +140,7 @@ export function MembersColumn({ guild, selection, permFilter, onSelectUser, show
 
             <ScrollerThin className={cl("col-scroller")} orientation="auto">
                 {memberIds.length === 0
-                    ? <div className={cl("empty")}><Text variant="text-md/normal">{globalSearch ? "No members found." : "No members to show."}</Text></div>
+                    ? <div className={cl("empty")}><Paragraph size="md">{globalSearch ? "No members found." : "No members to show."}</Paragraph></div>
                     : memberIds.map(id => <MemberRow key={id} guildId={guild.id} userId={id} onSelect={onSelectUser} active={id === activeUserId} />)}
             </ScrollerThin>
         </div>
@@ -160,7 +161,7 @@ function MemberRow({ guildId, userId, onSelect, active }: { guildId: string; use
             onKeyDown={onActivateKey(() => onSelect(userId))}
         >
             <img className={cl("member-avatar")} src={avatar} alt="" />
-            <Text variant="text-md/normal" className={cl("list-item-text")}>{memberName(member, userId)}</Text>
+            <Paragraph size="md" className={cl("list-item-text")}>{memberName(member, userId)}</Paragraph>
             <button
                 className={cl("row-action")}
                 aria-label="Open profile"

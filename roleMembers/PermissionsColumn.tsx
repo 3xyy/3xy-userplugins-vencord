@@ -5,8 +5,9 @@
  */
 
 import { InfoIcon } from "@components/Icons";
+import { Paragraph } from "@components/Paragraph";
 import { Guild, Permissions } from "@vencord/discord-types";
-import { GuildMemberStore, GuildRoleStore, PermissionsBits, ScrollerThin, Text, Tooltip, useMemo, useState, useStateFromStores } from "@webpack/common";
+import { GuildMemberStore, GuildRoleStore, PermissionsBits, ScrollerThin, Tooltip, useMemo, useState, useStateFromStores } from "@webpack/common";
 
 import { PermissionAllowedIcon, PermissionDeniedIcon } from "./icons";
 import type { PermFilter } from "./modal";
@@ -54,7 +55,7 @@ export function PermissionsColumn({ guild, selection, permFilter, specMap, showP
 
             <ScrollerThin className={cl("col-scroller")} orientation="auto">
                 {visiblePerms.length === 0
-                    ? <div className={cl("empty")}><Text variant="text-md/normal">No permissions match.</Text></div>
+                    ? <div className={cl("empty")}><Paragraph size="md">No permissions match.</Paragraph></div>
                     : visiblePerms.map(([name, bit]) => {
                         const granted = (permissions & bit) === bit;
                         const Glyph = showPermissionIcons ? permissionIcons[name as Permissions] : undefined;
@@ -74,7 +75,7 @@ export function PermissionsColumn({ guild, selection, permFilter, specMap, showP
                                     {granted ? <PermissionAllowedIcon /> : <PermissionDeniedIcon />}
                                 </div>
                                 {Glyph != null && <Glyph />}
-                                <Text variant="text-md/normal" className={cl("perms-item-text")}>{title}</Text>
+                                <Paragraph size="md" className={cl("perms-item-text")}>{title}</Paragraph>
                                 <Tooltip text={getPermissionDescription(spec)}>
                                     {props => <InfoIcon {...props} />}
                                 </Tooltip>

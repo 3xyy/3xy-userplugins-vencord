@@ -5,8 +5,9 @@
  */
 
 import { OwnerCrownIcon } from "@components/Icons";
+import { Paragraph } from "@components/Paragraph";
 import { Guild } from "@vencord/discord-types";
-import { GuildMemberCountStore, GuildMemberStore, IconUtils, ScrollerThin, Text, UserStore,useState, useStateFromStores } from "@webpack/common";
+import { GuildMemberCountStore, GuildMemberStore, IconUtils, ScrollerThin, UserStore,useState, useStateFromStores } from "@webpack/common";
 
 import type { PermFilter } from "./modal";
 import { getRoleDotStyle, getRoleIconSrc } from "./roleStyle";
@@ -75,7 +76,7 @@ export function RolesColumn({ guild, items, selection, permFilter, onSelect, sho
 
             <ScrollerThin className={cl("col-scroller")} orientation="auto">
                 {visible.length === 0
-                    ? <div className={cl("empty")}><Text variant="text-md/normal">No roles to show.</Text></div>
+                    ? <div className={cl("empty")}><Paragraph size="md">No roles to show.</Paragraph></div>
                     : visible.map(item => {
                         const key = item.kind === "owner" ? "owner" : item.role.id;
                         const active = isItemActive(item, selection);
@@ -93,7 +94,7 @@ export function RolesColumn({ guild, items, selection, permFilter, onSelect, sho
                                     onKeyDown={onActivateKey(() => onSelect(item))}
                                 >
                                     <img className={cl("member-avatar")} src={avatar} alt="" />
-                                    <Text variant="text-md/normal" className={cl("list-item-text")}>{name}</Text>
+                                    <Paragraph size="md" className={cl("list-item-text")}>{name}</Paragraph>
                                     <OwnerCrownIcon className={cl("owner-crown")} height={18} width={18} aria-hidden="true" />
                                 </div>
                             );
@@ -114,7 +115,7 @@ export function RolesColumn({ guild, items, selection, permFilter, onSelect, sho
                             >
                                 <span className={cl("role-dot")} style={getRoleDotStyle(role, renderRoleStyles)} />
                                 {iconSrc != null && <img className={cl("role-img")} src={iconSrc} alt="" />}
-                                <Text variant="text-md/normal" className={cl("list-item-text")}>{role.name}</Text>
+                                <Paragraph size="md" className={cl("list-item-text")}>{role.name}</Paragraph>
                                 {showMemberCount && (
                                     <span
                                         className={cl("count-badge")}

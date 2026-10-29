@@ -5,9 +5,10 @@
  */
 
 import { Button, TextButton } from "@components/Button";
+import { Heading } from "@components/Heading";
 import { copyToClipboard } from "@utils/clipboard";
 import type { RenderModalProps } from "@vencord/discord-types";
-import { ChannelStore, Forms, GuildChannelStore, GuildStore, Modal, openModal, Select, showToast, useCallback, useEffect, useRef, useState } from "@webpack/common";
+import { ChannelStore, GuildChannelStore, GuildStore, Modal, openModal, Select, showToast, useCallback, useEffect, useRef, useState } from "@webpack/common";
 
 import { Checkbox, PasswordField, SwitchRow } from "./controls";
 import { saveRecord } from "./ExportHistory";
@@ -335,7 +336,7 @@ function ExportMenu({ modalProps, settings }: { modalProps: RenderModalProps; se
             <div className="vc-export-modal-body" ref={body}>
                 {/* Queue summary */}
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">Queue</Forms.FormTitle>
+                    <Heading tag="h5">Queue</Heading>
                     {queue.length === 0 ? (
                         <span className="vc-export-hint">Nothing queued yet. Right-click a channel, a server or a message range to add it.</span>
                     ) : (
@@ -363,7 +364,7 @@ function ExportMenu({ modalProps, settings }: { modalProps: RenderModalProps; se
 
                 {/* Select messages (highlight/hide) for the queued export */}
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">Highlight or hide messages</Forms.FormTitle>
+                    <Heading tag="h5">Highlight or hide messages</Heading>
                     <div className="vc-export-row-inline">
                         <Button size="small" disabled={isExporting} onClick={() => {
                             (window as any).__ecSelectingFrom = "queue";
@@ -381,11 +382,11 @@ function ExportMenu({ modalProps, settings }: { modalProps: RenderModalProps; se
 
                 {/* Filters */}
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">Leave out users (IDs, comma separated)</Forms.FormTitle>
+                    <Heading tag="h5">Leave out users (IDs, comma separated)</Heading>
                     <input type="text" className="vc-export-input" value={excludeUserIds} onChange={e => setExcludeUserIds(e.target.value)} disabled={isExporting} placeholder="Nobody" spellCheck={false} />
                 </div>
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">Only messages with</Forms.FormTitle>
+                    <Heading tag="h5">Only messages with</Heading>
                     <div className="vc-export-checkbox-group">
                         {(["image", "video", "file", "link"] as const).map(t => (
                             <Checkbox key={t} label={MEDIA_TYPE_LABELS[t]} checked={mediaTypes[t]} onChange={() => toggleMediaType(t)} disabled={isExporting} />
@@ -394,7 +395,7 @@ function ExportMenu({ modalProps, settings }: { modalProps: RenderModalProps; se
                     <span className="vc-export-hint">Leave all unticked to export every message.</span>
                 </div>
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">Media</Forms.FormTitle>
+                    <Heading tag="h5">Media</Heading>
                     <Select options={MEDIA_OPTIONS} isSelected={v => v === mediaMode} select={v => setMediaMode(v)} serialize={v => v} isDisabled={isExporting} />
                 </div>
 
@@ -589,7 +590,7 @@ function SingleExportModal({ modalProps, channelId, guildId, serverExport, setti
         >
             <div className="vc-export-modal-body" ref={body}>
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">Dates (both days included)</Forms.FormTitle>
+                    <Heading tag="h5">Dates (both days included)</Heading>
                     <div className="vc-export-row">
                         <input type="date" className="vc-export-input vc-export-input-date" aria-label="From" value={dateFrom} onChange={e => setDateFrom(e.target.value)} disabled={isExporting} />
                         <span className="vc-export-hint vc-export-row-sep">to</span>
@@ -597,15 +598,15 @@ function SingleExportModal({ modalProps, channelId, guildId, serverExport, setti
                     </div>
                 </div>
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">Only these users (IDs, comma separated)</Forms.FormTitle>
+                    <Heading tag="h5">Only these users (IDs, comma separated)</Heading>
                     <input type="text" className="vc-export-input" value={includeUserIds} onChange={e => setIncludeUserIds(e.target.value)} disabled={isExporting} placeholder="Everyone" spellCheck={false} />
                 </div>
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">Leave out users (IDs, comma separated)</Forms.FormTitle>
+                    <Heading tag="h5">Leave out users (IDs, comma separated)</Heading>
                     <input type="text" className="vc-export-input" value={excludeUserIds} onChange={e => setExcludeUserIds(e.target.value)} disabled={isExporting} placeholder="Nobody" spellCheck={false} />
                 </div>
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">Only messages with</Forms.FormTitle>
+                    <Heading tag="h5">Only messages with</Heading>
                     <div className="vc-export-checkbox-group">
                         {(["image", "video", "file", "link"] as const).map(t => (
                             <Checkbox key={t} label={MEDIA_TYPE_LABELS[t]} checked={mediaTypes[t]} onChange={() => toggleMediaType(t)} disabled={isExporting} />
@@ -614,12 +615,12 @@ function SingleExportModal({ modalProps, channelId, guildId, serverExport, setti
                     <span className="vc-export-hint">Leave all unticked to export every message.</span>
                 </div>
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">{serverExport ? "Most messages per channel" : "Most messages"}</Forms.FormTitle>
+                    <Heading tag="h5">{serverExport ? "Most messages per channel" : "Most messages"}</Heading>
                     <input type="number" className="vc-export-input vc-export-input-number" value={messageCount} onChange={e => setMessageCount(e.target.value)} disabled={isExporting} min="1" placeholder="All" />
                 </div>
                 {/* Select messages */}
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">Highlight or hide messages</Forms.FormTitle>
+                    <Heading tag="h5">Highlight or hide messages</Heading>
                     <div className="vc-export-row-inline">
                         <Button size="small" disabled={isExporting} onClick={() => {
                             (window as any).__ecSingleExportState = { channelId, guildId, serverExport, dateFrom, dateTo, includeUserIds, excludeUserIds, messageCount, mediaTypes, mediaMode, passwordProtect, password, shouldShare, adminMode };
@@ -642,7 +643,7 @@ function SingleExportModal({ modalProps, channelId, guildId, serverExport, setti
                 </div>
                 <div className="vc-export-divider" />
                 <div className="vc-export-field">
-                    <Forms.FormTitle tag="h5">Media</Forms.FormTitle>
+                    <Heading tag="h5">Media</Heading>
                     <Select options={MEDIA_OPTIONS} isSelected={v => v === mediaMode} select={v => setMediaMode(v)} serialize={v => v} isDisabled={isExporting} />
                 </div>
                 <ExportOptionsSection

@@ -10,8 +10,9 @@
 
 import { Button } from "@components/Button";
 import { Heading } from "@components/Heading";
+import { Paragraph } from "@components/Paragraph";
 import { classNameFactory } from "@utils/css";
-import { showToast, Text, useState } from "@webpack/common";
+import { showToast, useState } from "@webpack/common";
 
 import { getNative } from "../engineClient";
 import { olog } from "../log";
@@ -138,10 +139,10 @@ export function FoldersSection({ compact = false }: { compact?: boolean; }) {
                 <Heading tag="h5">Soundboard folders</Heading>
                 {folders.length === 0
                     ? (
-                        <Text variant="text-sm/normal" className={cl("setup-text")}>
+                        <Paragraph size="sm" className={cl("setup-text")}>
                             No folders yet. Add a folder with sound files ({FORMATS}) and its sounds show up in the
                             Soundboard tab of the o2i panel, ready to play into calls. You can add more than one.
-                        </Text>
+                        </Paragraph>
                     )
                     : <FolderRows folders={folders} compact={false} />}
                 <Button variant="secondary" disabled={picking} onClick={onAdd}>{addLabel}</Button>
