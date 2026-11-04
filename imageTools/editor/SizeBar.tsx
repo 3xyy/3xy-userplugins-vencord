@@ -14,6 +14,7 @@ import type { SaveState } from "./EditorModal";
 import { encodeToFit, estimateSize, extFor, PreferredFormat, SaveFormat, stripExtension } from "./encode";
 import { Doc } from "./model";
 import { isDraftFull, MAX_ATTACHMENTS, replaceUpload } from "./replaceUpload";
+import { ZOOM_HINT } from "./shortcuts";
 
 const fmtMB = (b: number) => (b / 1024 / 1024).toFixed(2) + " MB";
 
@@ -118,7 +119,7 @@ export function SizeBar({ doc, upload, modalProps, save, zoom, onFit }: { doc: D
                     </select>
                 )}
             </Tooltip>
-            <Tooltip text="Click to fit the image (Ctrl+0). Zoom with Ctrl+scroll. Pan with the middle mouse button or Space+drag.">
+            <Tooltip text={ZOOM_HINT}>
                 {tooltipProps => (
                     <button
                         {...tooltipProps}

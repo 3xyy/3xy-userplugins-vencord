@@ -16,6 +16,8 @@ Userplugins for [Vencord](https://vencord.dev). Each plugin folder has its own R
 | [RoleMembers](roleMembers) | Shows a server's roles, their permissions and their members in one window. |
 | [SpotifyStatus](spotifyStatus) | Shows the current song in the custom status, a rich presence activity, or both. |
 
+Output2Input is Windows only, as is SpotifyStatus's Windows media controls source. Everything else also works on macOS.
+
 [`o2i-rust-engine`](o2i-rust-engine) is not a plugin. It contains the source code of `o2i.exe`, the audio engine that Output2Input controls.
 
 ## Requirements
@@ -50,7 +52,7 @@ Vencord's documentation covers [installing from source](https://docs.vencord.dev
 
 1. Download the latest version of this repository.
 2. Replace the plugin folders in `src/userplugins` with the new ones.
-3. Run `pnpm build` and reload Discord with Ctrl+R.
+3. Run `pnpm build` and reload Discord with Ctrl+R (⌘R on macOS).
 
 Run `pnpm inject` again only if a Discord update removed Vencord. For Output2Input, also replace `o2i.exe` with the one from the [latest release](https://github.com/3xyy/3xy-userplugins-vencord/releases/latest).
 

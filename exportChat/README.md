@@ -74,6 +74,7 @@ Exports Discord channels, DMs, group DMs, threads and whole servers to a single 
 - ExportChat runs `npx --yes wrangler@4.63.0 pages deploy`. The wrangler version is pinned.
 - Each share deploys to its own random preview branch (`s-<random>`), never to production. Anyone with the link can open it. Use a password for private chats.
 - On Windows, `node.exe` and `node_modules\npm\bin\npx-cli.js` must be in the same PATH folder, as the standard Node.js installer sets up. Shim-based Node managers such as Volta are not detected.
+- On macOS and Linux, Discord started from the Dock or a launcher usually has a PATH without Homebrew or Node version managers. ExportChat looks for a folder with both `npx` and `node` on PATH, then in `~/.volta/bin`, the newest `~/.nvm` version, fnm's default alias, `/opt/homebrew/bin`, `/usr/local/bin` and `/opt/local/bin`.
 - Shares and uploads are capped at 25 MB per file. Delete shared pages from the export history when no longer needed.
 
 ### Limitations

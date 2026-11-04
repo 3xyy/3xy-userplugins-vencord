@@ -9,6 +9,7 @@ import { showToast, Tooltip } from "@webpack/common";
 import { logger } from "../logger";
 import { Doc, ToolId } from "./model";
 import { promptText } from "./prompt";
+import { REDO_LABEL, UNDO_LABEL } from "./shortcuts";
 import { bakeFlip, bakeResize, bakeRotate90 } from "./transforms";
 
 // [id, label (tooltip and accessible name), SVG path(s)]
@@ -118,8 +119,8 @@ export function Toolbar(p: Props) {
                 />
             ))}
             <div className="vc-it-spacer" />
-            <IconButton label="Undo (Ctrl+Z)" path={ICON_UNDO} disabled={!p.canUndo} onClick={p.onUndo} />
-            <IconButton label="Redo (Ctrl+Y)" path={ICON_REDO} disabled={!p.canRedo} onClick={p.onRedo} />
+            <IconButton label={UNDO_LABEL} path={ICON_UNDO} disabled={!p.canUndo} onClick={p.onUndo} />
+            <IconButton label={REDO_LABEL} path={ICON_REDO} disabled={!p.canRedo} onClick={p.onRedo} />
             <IconButton label="Start over (removes every edit)" path={ICON_RESET} onClick={p.onReset} />
             <div className="vc-it-divider" />
             <IconButton label="Rotate left" path={ICON_ROTATE_LEFT} onClick={() => bake(d => bakeRotate90(d.base, d.objects, -1))} />
