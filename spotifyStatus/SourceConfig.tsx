@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { IS_WINDOWS } from "@utils/constants";
 import { classNameFactory } from "@utils/css";
 import { TextInput, useState } from "@webpack/common";
 
@@ -42,6 +43,15 @@ export function SourceConfig({ settings, restart }: { settings: any; restart: (r
         return (
             <div className={cl("source-info")}>
                 Connect Spotify in Discord under <strong>Settings &gt; Connections</strong>. Song changes show up right away.
+            </div>
+        );
+    }
+
+    // Settings synced from a Windows install can carry this source to a Mac or Linux one
+    if (source === "smtc" && !IS_WINDOWS) {
+        return (
+            <div className={cl("source-info")}>
+                Windows media controls only work on Windows. Choose another source above.
             </div>
         );
     }

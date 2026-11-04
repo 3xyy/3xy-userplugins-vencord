@@ -14,6 +14,7 @@ import { Heading } from "@components/Heading";
 import { Margins } from "@components/margins";
 import { Paragraph } from "@components/Paragraph";
 import { SpotifyStore } from "@plugins/spotifyControls/SpotifyStore";
+import { IS_WINDOWS } from "@utils/constants";
 import { Logger } from "@utils/Logger";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { ActivityFlags, ActivityStatusDisplayType, ActivityType } from "@vencord/discord-types/enums";
@@ -46,11 +47,12 @@ const LASTFM_PUBLIC_API_KEY = "790c37d90400163a5a5fe00d6ca32ef0";
 const ShowCurrentGame = getUserSettingLazy<boolean>("status", "showCurrentGame")!;
 
 // -------- option lists --------
+// Windows media controls are only offered on Windows (SourceConfig explains a synced "smtc" elsewhere)
 const SOURCE_OPTIONS = [
     { label: "Spotify (your Discord connection)", value: "spotify", default: true },
     { label: "Windows media controls (any app, Windows only)", value: "smtc" },
     { label: "Last.fm", value: "lastfm" },
-];
+].filter(o => IS_WINDOWS || o.value !== "smtc");
 
 const FILTER_MODES = [
     { label: "Off", value: "off", default: true },

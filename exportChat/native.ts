@@ -14,8 +14,8 @@ import { randomBytes } from "crypto";
 import { BrowserWindow, dialog, IpcMainInvokeEvent, OpenDialogOptions, shell } from "electron";
 // Bundled at build time (scripts/build/common.mjs fileUrlPlugin), so no file is read at runtime.
 import dcefTemplate from "file://dcef-template.html";
-import { closeSync, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { accessSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "path";
 
 import { CATBOX_USERHASH_RE, CF_ACCOUNT_RE, CF_PROJECT_RE, CF_TOKEN_RE, EXPORT_FILENAME_RE, EXPORT_SNIFF_BYTES, looksLikeExportHead, MAX_SHARE_BYTES } from "./validation";
@@ -176,9 +176,10 @@ async function lookupDeploymentId(token: string, accountId: string, project: str
 /**
  * How to run npx without a shell. On Windows `npx` is `npx.cmd`, which Node refuses to spawn without
  * a shell, so run npm's own npx-cli.js with the node.exe next to it on PATH instead.
+ * Elsewhere see findNpxPosix. `binDir` is put first on the child's PATH.
  */
-function findNpx(): { file: string; args: string[]; } | null {
-    if (process.platform !== "win32") return { file: "npx", args: [] };
+function findNpx(): { file: string; args: string[]; binDir?: string; } | null {
+    if (process.platform !== "win32") return findNpxPosix();
     for (const entry of (process.env.PATH ?? "").split(delimiter)) {
         const dir = entry.trim().replace(/^"(.*)"$/, "$1");
         if (!dir || !isAbsolute(dir)) continue;
@@ -189,7 +190,65 @@ function findNpx(): { file: string; args: string[]; } | null {
     return null;
 }
 
-const NO_NODE = "Sharing needs Node.js (npx) on your PATH. Install Node.js from nodejs.org, then restart Discord.";
+function isExecutableFile(p: string): boolean {
+    try {
+        accessSync(p, fsConstants.X_OK);
+        return statSync(p).isFile();
+    } catch {
+        return false;
+    }
+}
+
+/** `~/.nvm/versions/node/v*\/bin` folders, newest version first. */
+function nvmBinDirs(home: string): string[] {
+    const root = join(home, ".nvm", "versions", "node");
+    let names: string[];
+    try { names = readdirSync(root); } catch { return []; }
+    const version = (n: string) => n.slice(1).split(".").map(x => parseInt(x, 10) || 0);
+    return names
+        .filter(n => /^v\d+(\.\d+)*$/.test(n))
+        .sort((a, b) => {
+            const va = version(a), vb = version(b);
+            for (let i = 0; i < Math.max(va.length, vb.length); i++) {
+                const d = (vb[i] ?? 0) - (va[i] ?? 0);
+                if (d) return d;
+            }
+            return 0;
+        })
+        .map(n => join(root, n, "bin"));
+}
+
+/**
+ * macOS / Linux. Discord started from the Dock (or a desktop launcher) gets a minimal PATH such as
+ * `/usr/bin:/bin:/usr/sbin:/sbin`, without Homebrew or a Node version manager, so plain `npx` isn't found
+ * even with Node installed. Look in PATH first, then where version managers and package managers put
+ * Node, in roughly the order a login shell would. A folder only counts if it has both `npx` and `node`:
+ * npx (and wrangler) start with `#!/usr/bin/env node`, which works once that folder is first on PATH.
+ * Nothing found: plain `npx` (the PATH lookup this used before).
+ */
+function findNpxPosix(): { file: string; args: string[]; binDir?: string; } {
+    const home = homedir();
+    const dirs = [
+        ...(process.env.PATH ?? "").split(delimiter),
+        join(home, ".volta", "bin"),
+        ...nvmBinDirs(home),
+        join(home, "Library", "Application Support", "fnm", "aliases", "default", "bin"),
+        join(home, ".local", "share", "fnm", "aliases", "default", "bin"),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/opt/local/bin",
+    ];
+    for (const dir of dirs) {
+        if (!dir || !isAbsolute(dir)) continue;
+        const npx = join(dir, "npx");
+        if (isExecutableFile(npx) && isExecutableFile(join(dir, "node"))) return { file: npx, args: [], binDir: dir };
+    }
+    return { file: "npx", args: [] };
+}
+
+const NO_NODE = process.platform === "win32"
+    ? "Sharing needs Node.js (npx) on your PATH. Install Node.js from nodejs.org, then restart Discord."
+    : "Sharing needs Node.js (npx), and Discord couldn't find it. Install Node.js (from nodejs.org or with Homebrew), then restart Discord.";
 
 export function loadDcefTemplate(_: IpcMainInvokeEvent): string {
     return dcefTemplate;
@@ -437,6 +496,8 @@ export async function shareToPages(_: IpcMainInvokeEvent, html: string, cfApiTok
             WRANGLER_SEND_METRICS: "false",
             FORCE_COLOR: "0",
             npm_config_yes: "true",
+            // Only set off Windows (there the variable is "Path", and a second "PATH" key would clash)
+            ...(npx.binDir ? { PATH: [npx.binDir, process.env.PATH].filter(Boolean).join(delimiter) } : {}),
         };
 
         const output = await new Promise<string>((res, rej) => {

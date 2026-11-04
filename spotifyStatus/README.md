@@ -23,7 +23,7 @@ Shows the current song in the custom status, as a rich presence activity, or bot
 1. Enable SpotifyStatus and open its settings.
 2. Choose a **Source**:
    - **Spotify (your Discord connection)**: connect Spotify under **Settings > Connections**. Updates are immediate.
-   - **Windows media controls**: reads what Windows shows in its media overlay. Set **Check every (seconds)** (minimum 2).
+   - **Windows media controls**: reads what Windows shows in its media overlay. Set **Check every (seconds)** (minimum 2). Only offered on Windows.
    - **Last.fm**: enter the **Last.fm username** and set **Check every (seconds)**. Without a **Last.fm API key (optional)**, the plugin uses the shared key of Vencord's own music plugin.
 3. Turn on **Update Custom Status**, **Update Activity**, or both.
 4. Edit the templates and check the result in the preview.

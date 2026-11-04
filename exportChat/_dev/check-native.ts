@@ -5,16 +5,17 @@
  */
 
 // Run: pnpm exec tsx src/userplugins/exportChat/_dev/check-native.ts
-// Offline checks for native.ts's Upload file picker and the delete allow-list. native.ts is bundled with
-// esbuild into a temp folder, with stand-ins for electron (the file dialog), Vencord's main-process
-// settings and child_process (so wrangler / npx can never run); fetch throws. Only temp files are touched.
+// Offline checks for native.ts's Upload file picker, the delete allow-list and how Share finds npx.
+// native.ts is bundled with esbuild into a temp folder, with stand-ins for electron (the file dialog),
+// Vencord's main-process settings and child_process (it only records the call, so wrangler / npx can
+// never run); fetch throws. Only temp files are touched.
 // An optional argument bundles another native.ts instead (used to show the checks failing before a fix).
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, delimiter, join, resolve, sep } from "node:path";
 
 import { build, type Plugin } from "esbuild";
 
@@ -43,7 +44,12 @@ export const BrowserWindow = { fromWebContents: wc => (wc ? { __win: true } : nu
     "@main/settings": `
 export const RendererSettings = { get store() { return { plugins: { ExportChat: { saveLocation: globalThis.__saveLocation ?? "" } } }; } };`,
     "child_process": `
-export function execFile() { throw new Error("child_process is disabled in this check"); }`,
+export function execFile(file, args, opts, cb) {
+    const g = globalThis;
+    if (!g.__execCalls) throw new Error("child_process is disabled in this check");
+    g.__execCalls.push({ file, args, opts });
+    cb(null, g.__execStdout ?? "", "");
+}`,
 };
 
 const stubs: Plugin = {
@@ -143,7 +149,9 @@ async function main() {
         // A name that only matches the picked one after case folding: KELVIN SIGN lowercases to "k"
         const kelvin = write("x" + String.fromCharCode(0x212a) + ".html", finishCopy);
         const plainK = write("xk.html", finishCopy);
-        if (existsSync(kelvin) && existsSync(plainK)) {
+        // Two separate files only where the file system keeps the names apart (NTFS does; macOS's
+        // case-insensitive APFS folds them into one file, so both names "exist" as the same inode).
+        if (existsSync(kelvin) && existsSync(plainK) && statSync(kelvin).ino !== statSync(plainK).ino) {
             await pickConfirmed(kelvin);
             ok(N.deleteLocalFile(null, plainK).success === false && existsSync(plainK) && existsSync(kelvin), "a different file whose name folds to the picked one is refused, and nothing is deleted");
             ok(N.deleteLocalFile(null, kelvin.toUpperCase()).success === false && existsSync(kelvin), "the picked path in other letter case is refused (exact match only)");
@@ -169,9 +177,104 @@ async function main() {
         ok(s.success && s.path.startsWith(saveDir + sep), "export saved into the save folder");
         ok(N.deleteLocalFile(null, s.path).success === true && !existsSync(s.path), "save-folder export still deletable");
 
+        if (process.platform === "win32") console.log("share npx lookup:\n  skip - macOS / Linux only");
+        else await checkNpxLookup(N, work);
+
         console.log(`\n${passed} checks passed`);
     } finally {
         rmSync(work, { recursive: true, force: true });
+    }
+}
+
+/**
+ * Share on macOS / Linux: Discord started from the Dock has a PATH without Homebrew or Node version
+ * managers. shareToPages must still find a folder holding both npx and node, run that npx, and put the
+ * folder first on the child's PATH. PATH and HOME are swapped for fake ones and restored afterwards.
+ */
+async function checkNpxLookup(N: any, work: string) {
+    console.log("share npx lookup:");
+    const savedPath = process.env.PATH, savedHome = process.env.HOME;
+    const home = join(work, "home");
+    const empty = join(work, "empty-bin");
+    mkdirSync(empty);
+    const SYSTEM_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"];
+    /** A bin folder with the given programs (mode 755 unless `modes` says otherwise). */
+    const binDir = (dir: string, names: string[], modes: Record<string, number> = {}) => {
+        mkdirSync(dir, { recursive: true });
+        for (const n of names) {
+            writeFileSync(join(dir, n), "#!/bin/sh\n");
+            chmodSync(join(dir, n), modes[n] ?? 0o755);
+        }
+        return dir;
+    };
+    const share = async () => {
+        g.__execCalls = [];
+        g.__execStdout = "Deployment complete! https://abcd1234.my-proj.pages.dev\n";
+        const r = await N.shareToPages(null, "<!doctype html>", "a".repeat(40), "0".repeat(32), "my-proj");
+        const call = g.__execCalls[0];
+        delete g.__execCalls;
+        return { r, call };
+    };
+    try {
+        process.env.HOME = home;
+
+        const nvm = join(home, ".nvm", "versions", "node");
+        // v9 sorts after v22 as text, so this also checks versions are compared as numbers
+        for (const v of ["v9.11.2", "v22.3.0", "v18.20.4"]) binDir(join(nvm, v, "bin"), ["npx", "node"]);
+        process.env.PATH = empty;
+        let { r, call } = await share();
+        const v22 = join(nvm, "v22.3.0", "bin");
+        ok(r.success === true && r.url === "https://abcd1234.my-proj.pages.dev", "share succeeds with npx found outside PATH");
+        ok(call.file === join(v22, "npx"), "npx not on PATH: the newest nvm version is used, not plain `npx`");
+        ok(call.opts.env.PATH === v22 + delimiter + empty, "that folder is put first on the child's PATH (node is found by npx's `#!/usr/bin/env node`)");
+        ok(call.args.slice(0, -1).join(" ") === "--yes wrangler@4.63.0 pages deploy . --project-name=my-proj" && /^--branch=s-[0-9a-f]{16}$/.test(call.args.at(-1)), "wrangler arguments unchanged");
+
+        const volta = binDir(join(home, ".volta", "bin"), ["npx", "node"]);
+        ({ call } = await share());
+        ok(call.file === join(volta, "npx"), "Volta is preferred over nvm (checked first)");
+
+        const onPath = binDir(join(work, "path-bin"), ["npx", "node"]);
+        process.env.PATH = [empty, onPath].join(delimiter);
+        ({ call } = await share());
+        ok(call.file === join(onPath, "npx"), "a PATH folder with npx and node wins over version managers");
+
+        const npxOnly = binDir(join(work, "npx-only"), ["npx"]);
+        process.env.PATH = [npxOnly, onPath].join(delimiter);
+        ({ call } = await share());
+        ok(call.file === join(onPath, "npx"), "a folder with npx but no node is skipped");
+
+        const notExec = binDir(join(work, "not-exec"), ["npx", "node"], { npx: 0o644 });
+        process.env.PATH = [notExec, onPath].join(delimiter);
+        ({ call } = await share());
+        ok(call.file === join(onPath, "npx"), "a non-executable npx is skipped");
+
+        const dirNamedNpx = join(work, "dir-npx");
+        mkdirSync(join(dirNamedNpx, "npx"), { recursive: true });
+        binDir(dirNamedNpx, ["node"]);
+        process.env.PATH = [dirNamedNpx, onPath].join(delimiter);
+        ({ call } = await share());
+        ok(call.file === join(onPath, "npx"), "a folder named npx is skipped");
+
+        // A relative entry that does hold npx and node, relative to the current folder
+        const savedCwd = process.cwd();
+        binDir(join(work, "rel-bin"), ["npx", "node"]);
+        process.chdir(work);
+        try {
+            process.env.PATH = ["rel-bin", onPath].join(delimiter);
+            ({ call } = await share());
+        } finally {
+            process.chdir(savedCwd);
+        }
+        ok(call.file === join(onPath, "npx"), "relative PATH entries are ignored");
+
+        rmSync(home, { recursive: true, force: true });
+        process.env.PATH = empty;
+        ({ call } = await share());
+        ok(call.file === "npx" ? call.opts.env.PATH === empty : SYSTEM_DIRS.some(d => call.file === join(d, "npx")),
+            `nothing in PATH or HOME: a system folder (Homebrew, /usr/local, MacPorts) or plain \`npx\` as before (got ${call.file})`);
+    } finally {
+        process.env.PATH = savedPath;
+        process.env.HOME = savedHome;
     }
 }
 

@@ -34,6 +34,8 @@ Adds an image editor for attachments before they are sent: annotate, blur, pixel
 
 ### Keyboard and mouse
 
+On macOS, use ⌘ where this table says Ctrl, except for Ctrl+scroll. Redo is ⌘⇧Z.
+
 | Action | Input |
 |---|---|
 | Zoom | Ctrl+scroll, pinch, Ctrl+= and Ctrl+- |
@@ -53,8 +55,8 @@ Adds an image editor for attachments before they are sent: annotate, blur, pixel
 
 | Setting | Default | Description |
 |---|---|---|
-| Enable Upload Editor | On | Shows the brush button on attached images and in the message bar. Requires a reload (Ctrl+R). |
-| Enable Viewer Rotate | On | Adds **Rotate left** and **Rotate right** to the image right-click menu. Requires a reload (Ctrl+R). |
+| Enable Upload Editor | On | Shows the brush button on attached images and in the message bar. Requires a reload (Ctrl+R, or ⌘R on macOS). |
+| Enable Viewer Rotate | On | Adds **Rotate left** and **Rotate right** to the image right-click menu. Requires a reload (Ctrl+R, or ⌘R on macOS). |
 | Default Save Format | PNG | PNG, WebP, or **Same as the original** (JPEG and WebP keep their format, anything else saves as PNG). |
 | Default Size Limit MB | 10 | Starting size limit in the bottom bar. 0 means no limit. |
 | Remember Last Tool | On | Opens the editor with the last used tool. |
